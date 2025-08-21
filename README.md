@@ -67,7 +67,7 @@ Alternatively, you can use the included interactive `setup.sh` script to generat
 
 ```bash
 # Download, make executable, then run
-curl -fsSL https://raw.githubusercontent.com/HakoForge/HakoFoundry/setup.sh -o setup.sh
+curl -fsSL https://raw.githubusercontent.com/HakoForge/HakoFoundry/main/setup.sh -o setup.sh
 chmod +x setup.sh
 ./setup.sh
 ```
@@ -75,7 +75,7 @@ chmod +x setup.sh
 Or with wget:
 
 ```bash
-wget -qO setup.sh https://raw.githubusercontent.com/HakoForge/HakoFoundry/setup.sh
+wget -qO setup.sh https://raw.githubusercontent.com/HakoForge/HakoFoundry/main/setup.sh
 chmod +x setup.sh
 ./setup.sh
 ```

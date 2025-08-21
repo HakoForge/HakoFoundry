@@ -138,10 +138,24 @@ ask_yes_no() {
 discover_block_devices() {
     echo "      # Dynamically discovered block devices ($(date))"
     local count=0
-    lsblk -d -n -o NAME,SIZE | grep '^sd' | while read device size; do
-        echo "      - \"/dev/$device:/dev/$device\"  # $size"
+    while read device size; do
+        dev_path="/dev/$device"
+        # Look for a by-id symlink that points to this device
+        by_id_path=""
+        for link in /dev/disk/by-id/*; do
+            if [ "$(readlink -f "$link")" = "$dev_path" ]; then
+                by_id="$(basename "$link")"
+                break
+            fi
+        done
+        # Output device info
+        if [ -n "$by_id_path" ]; then
+            echo "      - \"$dev_path:$dev_path\"  # $size, id: $by_id"
+        else
+            echo "      - \"$dev_path:$dev_path\"  # $size"
+        fi
         count=$((count + 1))
-    done
+    done < <(lsblk -d -n -o NAME,SIZE | grep -E '^(sd|nvme)')
     if [ $count -eq 0 ]; then
         echo "      # No block devices found ($(date))"
     fi

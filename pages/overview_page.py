@@ -1062,7 +1062,7 @@ class SystemOverview:
             with FadingDropdown('Add Backplane', icon='add').menu:
                 if card_class == StdPlaceHolderCard:
                     ui.menu_item(
-                        '4 HDD Backplane',
+                        '4 HDD/U.2 Backplane',
                         on_click=lambda: self.setup_backplane_buttons(
                             card, globals.layoutState.insert_backplane(card, "STD4HDD"), card.index
                         )

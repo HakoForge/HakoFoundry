@@ -1,0 +1,71 @@
+<?xml version="1.0"?>
+<Container version="2">
+    <Name>HakoFoundry</Name>
+    <Repository>hakoforge/hako-foundry:latest</Repository>
+    <Registry>https://hub.docker.com/r/hakoforge/hako-foundry</Registry>
+    <Network>bridge</Network>
+    <MyIP/>
+    <Shell>bash</Shell>
+    <Privileged>false</Privileged>
+
+    <Support>https://github.com/HakoForge/HakoFoundry</Support>
+    <Project>https://github.com/HakoForge/HakoFoundry</Project>
+
+    <Overview>HakoFoundry is a comprehensive disk imaging and hardware management tool designed for IT professionals, system administrators, and tech enthusiasts. It provides a web-based interface for disk cloning, imaging, hardware diagnostics, and system recovery operations.
+
+    Key Features:
+    - Web-based disk imaging and cloning
+    - Hardware diagnostics and monitoring
+    - Support for multiple disk formats
+    - Real-time system information
+    - Secure web interface
+    - Cross-platform compatibility
+
+    This template automatically discovers and maps storage devices and serial ports for seamless hardware access.</Overview>
+
+    <Category>Tools:System</Category>
+    <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+    <TemplateURL>https://raw.githubusercontent.com/HakoForge/HakoFoundry/main/unraid-templates/HakoFoundry.xml</TemplateURL>
+    <Icon>https://raw.githubusercontent.com/HakoForge/HakoFoundry/main/assets/images/icon.png</Icon>
+
+    <ExtraParams>--cap-add=SYS_RAWIO</ExtraParams>
+
+    <Networking>
+    <Mode>bridge</Mode>
+    <Publish>
+        <Port>
+        <HostPort>8080</HostPort>
+        <ContainerPort>8080</ContainerPort>
+        <Protocol>tcp</Protocol>
+        </Port>
+    </Publish>
+    </Networking>
+
+    <Data>
+    <Volume>
+        <HostDir>/mnt/user/appdata/hako-foundry</HostDir>
+        <ContainerDir>/app/config</ContainerDir>
+        <Mode>rw</Mode>
+    </Volume>
+    <Volume>
+        <HostDir>/sys/class/thermal</HostDir>
+        <ContainerDir>/sys/class/thermal</ContainerDir>
+        <Mode>ro</Mode>
+    </Volume>
+    <Volume>
+        <HostDir>/sys/class/hwmon</HostDir>
+        <ContainerDir>/sys/class/hwmon</ContainerDir>
+        <Mode>ro</Mode>
+    </Volume>
+    </Data>
+
+    <Config Name="Web UI Port" Target="8080" Default="8080" Mode="tcp" Description="Web interface port for HakoFoundry" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+    <Config Name="Configuration Directory" Target="/app/config" Default="/mnt/user/appdata/hako-foundry" Mode="rw" Description="Directory for HakoFoundry configuration and data" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/hako-foundry</Config>
+    <Config Name="Thermal Monitoring" Target="/sys/class/thermal" Default="/sys/class/thermal" Mode="ro" Description="System thermal information (read-only)" Type="Path" Display="advanced" Required="false" Mask="false">/sys/class/thermal</Config>
+    <Config Name="Hardware Monitoring" Target="/sys/class/hwmon" Default="/sys/class/hwmon" Mode="ro" Description="Hardware monitoring information (read-only)" Type="Path" Display="advanced" Required="false" Mask="false">/sys/class/hwmon</Config>
+
+    <Config Name="Open Access" Target="OPEN_ACCESS" Default="false" Mode="" Description="Enable open access without authentication (true/false)" Type="Variable" Display="always" Required="true" Mask="false">false</Config>
+    <Config Name="Secret Key" Target="SECRET" Default="" Mode="" Description="Secret key for authentication (leave empty to auto-generate)" Type="Variable" Display="always" Required="false" Mask="true"></Config>
+    <Config Name="User ID" Target="PUID" Default="99" Mode="" Description="User ID for file permissions (default: nobody)" Type="Variable" Display="always" Required="true" Mask="false">99</Config>
+    <Config Name="Group ID" Target="PGID" Default="100" Mode="" Description="Group ID for file permissions (default: users)" Type="Variable" Display="always" Required="true" Mask="false">100</Config>
+</Container>

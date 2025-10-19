@@ -23,7 +23,7 @@ generate_secret() {
 }
 
 discover_block_devices() {
-    echo -e "${CYAN}🔍 Scanning for storage devices...${NC}"
+    echo -e "${CYAN}🔍 Scanning for storage devices...${NC}" >&2
     local devices=() count=0
     while IFS= read -r line; do
         local name size type
@@ -33,23 +33,24 @@ discover_block_devices() {
         if [[ "$type" != "part" && "$name" != loop* && "$name" != ram* ]]; then
         devices+=("/dev/$name|$size"); ((count++))
         fi
-    done < <(lsblk -d -n -o NAME,SIZE,TYPE 2>/dev/null | grep -E '^sd|^nvme|^mmcblk')
-    echo "Found $count storage devices:"
+    done < <(lsblk -d -n -o NAME,SIZE,TYPE 2>/dev/null | grep -E '^(sd|nvme|mmcblk)' || true)
+
+    echo "Found $count storage devices:" >&2
     for di in "${devices[@]}"; do
-        echo "  - $(cut -d'|' -f1 <<<"$di") ($(cut -d'|' -f2 <<<"$di"))"
+        echo "  - $(cut -d'|' -f1 <<<"$di") ($(cut -d'|' -f2 <<<"$di"))" >&2
     done
     printf '%s\n' "${devices[@]}"
 }
 
 discover_serial_devices() {
-    echo -e "${CYAN}🔍 Scanning for serial devices...${NC}"
+    echo -e "${CYAN}🔍 Scanning for serial devices...${NC}" >&2
     local devices=() count=0
     for device in /dev/ttyACM* /dev/ttyUSB* /dev/ttyS*; do
         [[ -c "$device" ]] || continue
         devices+=("$device"); ((count++))
     done
-    echo "Found $count serial devices:"
-    for d in "${devices[@]}"; do echo "  - $d"; done
+    echo "Found $count serial devices:" >&2
+    for d in "${devices[@]}"; do echo "  - $d" >&2; done
     printf '%s\n' "${devices[@]}"
 }
 
@@ -158,8 +159,8 @@ fi
 
 # Discover devices
 echo -e "${GREEN}🔎 Device Discovery${NC}\n"
-STORAGE_DEVICES="$(discover_block_devices)"; echo
-SERIAL_DEVICES="$(discover_serial_devices)"; echo
+STORAGE_DEVICES="$(discover_block_devices)"
+SERIAL_DEVICES="$(discover_serial_devices)"
 
 # Secret + config
 echo -e "${GREEN}🔐 Generating Security Configuration${NC}"

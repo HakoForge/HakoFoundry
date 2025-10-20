@@ -61,6 +61,33 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
+    - name: Extract ARM64-only metadata (with -arm64 suffix)
+      id: meta_arm64
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=raw,value=arm64
+        flavor: |
+          latest=auto
+          suffix=-arm64,onlatest=true
+
+    - name: Build and push ARM64-only image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/arm64
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta_arm64.outputs.tags }}
+        labels: ${{ steps.meta_arm64.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
     - name: Verify multi-arch build
       if: github.event_name != 'pull_request'
       run: |

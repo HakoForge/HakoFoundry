@@ -4,6 +4,7 @@
 
 OUTPUT_FILE="docker-compose.yml"
 BACKUP_FILE="docker-compose.yml.backup"
+BUILD_LOCAL="false"
 
 # Colors for output
 RED='\033[0;31m'
@@ -12,6 +13,15 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
+
+# Portable in-place sed helper (GNU vs BSD)
+sed_inplace() {
+    if sed --version >/dev/null 2>&1; then
+        sed -i "$@"
+    else
+        sed -i '' "$@"
+    fi
+}
 
 # Function to detect system architecture
 detect_architecture() {
@@ -222,7 +232,7 @@ if [ "$DETECTED_ARCH" = "arm64" ]; then
     echo "Choose image strategy for ARM64:"
     echo "  1. Multi-arch image (may use emulation)"
     echo "  2. Native ARM64 image"
-    echo "  3. Build your own"
+    echo "  3. Build your own (use local Dockerfile)"
     echo ""
 
     read -p "Select option (1/2/3) [2]: " IMAGE_CHOICE
@@ -238,8 +248,8 @@ if [ "$DETECTED_ARCH" = "arm64" ]; then
             echo "Selected: Native ARM64 image"
             ;;
         3)
-            read -p "Enter custom image: " DOCKER_IMAGE
-            echo "Selected: Custom image ($DOCKER_IMAGE)"
+            BUILD_LOCAL="true"
+            echo "Selected: Build from local Dockerfile"
             ;;
         *)
             DOCKER_IMAGE="hakoforge/hako-foundry:arm64"
@@ -247,28 +257,73 @@ if [ "$DETECTED_ARCH" = "arm64" ]; then
             ;;
     esac
 else
-    echo "Recommended image for $DETECTED_ARCH: hakoforge/hako-foundry:latest"
-    read -p "Use recommended image? [Y/n]: " USE_RECOMMENDED
-    USE_RECOMMENDED=${USE_RECOMMENDED:-y}
+    echo "Choose image strategy for $DETECTED_ARCH:"
+    echo "  1. Recommended multi-arch image (hakoforge/hako-foundry:latest)"
+    echo "  2. Enter custom image"
+    echo "  3. Build your own (use local Dockerfile)"
+    echo ""
 
-    if [[ "$USE_RECOMMENDED" =~ ^[Yy] ]]; then
-        DOCKER_IMAGE="hakoforge/hako-foundry:latest"
-        echo "Selected: multi-arch image"
-    else
-        read -p "Enter custom image: " DOCKER_IMAGE
-        echo "Selected: Custom image ($DOCKER_IMAGE)"
-    fi
+    read -p "Select option (1/2/3) [1]: " IMAGE_CHOICE
+    IMAGE_CHOICE=${IMAGE_CHOICE:-1}
+
+    case $IMAGE_CHOICE in
+        1)
+            DOCKER_IMAGE="hakoforge/hako-foundry:latest"
+            echo "Selected: multi-arch image"
+            ;;
+        2)
+            read -p "Enter custom image: " DOCKER_IMAGE
+            echo "Selected: Custom image ($DOCKER_IMAGE)"
+            ;;
+        3)
+            BUILD_LOCAL="true"
+            echo "Selected: Build from local Dockerfile"
+            ;;
+        *)
+            DOCKER_IMAGE="hakoforge/hako-foundry:latest"
+            echo "Defaulting to: multi-arch image"
+            ;;
+    esac
 fi
 echo ""
 
-# 2. Generate random secret
-echo -e "${GREEN}2. Generating secure secret...${NC}"
-SECRET=$(generate_secret)
-echo "Generated secret: $SECRET"
+# 2. Environment Configuration
+echo -e "${GREEN}2. Environment Configuration${NC}"
+if [ -f ".env" ]; then
+    DEFAULT_ENV_CHOICE=1
+else
+    DEFAULT_ENV_CHOICE=2
+fi
+echo "How would you like to supply environment variables?"
+echo "  1. Use a .env file (recommended for portability)"
+echo "  2. Define variables directly in docker-compose.yml"
+read -p "Select option (1/2) [${DEFAULT_ENV_CHOICE}]: " ENV_CHOICE
+ENV_CHOICE=${ENV_CHOICE:-$DEFAULT_ENV_CHOICE}
+case $ENV_CHOICE in
+    1)
+        ENV_SOURCE="file"
+        echo "Selected: .env file (compose will reference .env)"
+        ;;
+    2)
+        ENV_SOURCE="compose"
+        echo "Selected: define variables in docker-compose.yml"
+        ;;
+    *)
+        ENV_SOURCE="file"
+        echo "Defaulting to: .env file"
+        ;;
+esac
 echo ""
 
-# 3. Ask about storage type
-echo -e "${GREEN}3. Storage Configuration${NC}"
+if [ "$ENV_SOURCE" = "compose" ]; then
+    echo -e "${GREEN}3. Generating secure secret...${NC}"
+    SECRET=$(generate_secret)
+    echo "Generated secret: $SECRET"
+    echo ""
+fi
+
+# 4. Ask about storage type
+echo -e "${GREEN}4. Storage Configuration${NC}"
 echo "Choose storage type for configuration data:"
 echo "  - Docker Volume: Managed by Docker, automatic cleanup, portable"
 echo "  - Bind Mount: Direct host path, easier backup/access, persistent"
@@ -291,15 +346,15 @@ else
 fi
 echo ""
 
-# 4. Ask for port
-echo -e "${GREEN}4. Network Configuration${NC}"
+# 5. Ask for port
+echo -e "${GREEN}5. Network Configuration${NC}"
 read -p "Enter host port [8080]: " HOST_PORT
 HOST_PORT=${HOST_PORT:-8080}
 echo "Will expose on port: $HOST_PORT"
 echo ""
 
-# 5. Ask about user/group configuration
-echo -e "${GREEN}5. User/Group Configuration${NC}"
+# 6. Ask about user/group configuration
+echo -e "${GREEN}6. User/Group Configuration${NC}"
 echo "Configure user and group IDs for file permissions:"
 echo "  - Set PUID/PGID: Run container with specific user/group (recommended for file access)"
 echo "  - Skip: Use container defaults (simpler but may cause permission issues)"
@@ -328,8 +383,8 @@ else
 fi
 echo ""
 
-# 6. Ask about open access
-echo -e "${GREEN}6. Security Configuration${NC}"
+# 7. Ask about open access
+echo -e "${GREEN}7. Security Configuration${NC}"
 echo "Open Access allows unrestricted access to the web interface."
 echo "  - true: No authentication required (convenient but less secure)"
 echo "  - false: Authentication required (more secure)"
@@ -342,8 +397,8 @@ fi
 echo "Open access: $OPEN_ACCESS"
 echo ""
 
-# 7. Ask about auto-scanning drives
-echo -e "${GREEN}7. Device Configuration${NC}"
+# 8. Ask about auto-scanning drives
+echo -e "${GREEN}8. Device Configuration${NC}"
 echo "Auto-scan will automatically detect and add all available storage devices."
 echo "This includes all /dev/sd* devices and serial ports (/dev/ttyACM*, /dev/ttyUSB*)."
 echo ""
@@ -386,7 +441,7 @@ if ask_yes_no "Auto-scan for storage devices and serial ports?" "y"; then
 fi
 echo ""
 
-echo -e "${GREEN}8. Generating docker-compose.yml...${NC}"
+echo -e "${GREEN}9. Generating docker-compose.yml...${NC}"
 
 # Generate the compose file header
 cat > "$OUTPUT_FILE" << EOF
@@ -394,23 +449,54 @@ version: '3.8'
 
 services:
   hako-foundry:
+EOF
+
+# Use build or image depending on selection
+if [ "$BUILD_LOCAL" = "true" ]; then
+  cat >> "$OUTPUT_FILE" << EOF
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hako-foundry
+    restart: unless-stopped
+EOF
+else
+  cat >> "$OUTPUT_FILE" << EOF
     image: $DOCKER_IMAGE
     container_name: hako-foundry
     pull_policy: always
     restart: unless-stopped
+EOF
+fi
+
+# Append ports and environment sections
+cat >> "$OUTPUT_FILE" << EOF
 
     # Port mapping
     ports:
       - "$HOST_PORT:8080"
+EOF
 
-    # Environment variables
+# Environment configuration (either .env file or inline environment)
+if [ "$ENV_SOURCE" = "file" ]; then
+    cat >> "$OUTPUT_FILE" << EOF
+
+    # Environment variables via .env file
+    env_file:
+      - .env
+EOF
+else
+    cat >> "$OUTPUT_FILE" << EOF
+
+    # Environment variables defined in compose
     environment:
       - OPEN_ACCESS=$OPEN_ACCESS
       - SECRET=$SECRET
 EOF
+fi
 
-# Add PUID/PGID only if configured
-if [ "$USE_USER_CONFIG" = "true" ]; then
+# Add PUID/PGID only if configured and using compose-defined environment
+if [ "$USE_USER_CONFIG" = "true" ] && [ "$ENV_SOURCE" = "compose" ]; then
     cat >> "$OUTPUT_FILE" << EOF
       - PUID=$PUID
       - PGID=$PGID
@@ -469,12 +555,94 @@ else
 EOF
 fi
 
+# If env source is .env, ensure file exists and contains required keys
+if [ "$ENV_SOURCE" = "file" ]; then
+    ENV_FILE_STATUS="unchanged"
+
+    if [ ! -f .env ]; then
+        GENERATED_SECRET=$(generate_secret)
+        {
+            echo "# Auto-generated by setup.sh on $(date)"
+            echo "SECRET=$GENERATED_SECRET"
+            echo "OPEN_ACCESS=$OPEN_ACCESS"
+            echo "DEBUG=false"
+            if [ "$USE_USER_CONFIG" = "true" ]; then
+                echo "PUID=$PUID"
+                echo "PGID=$PGID"
+            fi
+        } > .env
+        ENV_FILE_STATUS="created"
+    else
+        # Update or add keys as needed
+        # SECRET: generate if missing or placeholder/empty
+        if grep -q '^SECRET=' .env; then
+            CURRENT_SECRET=$(grep '^SECRET=' .env | tail -1 | cut -d= -f2-)
+            if [ -z "$CURRENT_SECRET" ] || [[ "$CURRENT_SECRET" == "your-very-secret-string" ]]; then
+                NEW_SECRET=$(generate_secret)
+                sed_inplace "s/^SECRET=.*/SECRET=$NEW_SECRET/" .env
+                ENV_FILE_STATUS="updated"
+            fi
+        else
+            echo "SECRET=$(generate_secret)" >> .env
+            ENV_FILE_STATUS="updated"
+        fi
+
+        # OPEN_ACCESS: sync to chosen value
+        if grep -q '^OPEN_ACCESS=' .env; then
+            sed_inplace "s/^OPEN_ACCESS=.*/OPEN_ACCESS=$OPEN_ACCESS/" .env
+            ENV_FILE_STATUS="updated"
+        else
+            echo "OPEN_ACCESS=$OPEN_ACCESS" >> .env
+            ENV_FILE_STATUS="updated"
+        fi
+
+        # DEBUG: ensure present (default false)
+        if ! grep -q '^DEBUG=' .env; then
+            echo "DEBUG=false" >> .env
+            ENV_FILE_STATUS="updated"
+        fi
+
+        # PUID/PGID: only if configured
+        if [ "$USE_USER_CONFIG" = "true" ]; then
+            if grep -q '^PUID=' .env; then
+                sed_inplace "s/^PUID=.*/PUID=$PUID/" .env
+            else
+                echo "PUID=$PUID" >> .env
+            fi
+            if grep -q '^PGID=' .env; then
+                sed_inplace "s/^PGID=.*/PGID=$PGID/" .env
+            else
+                echo "PGID=$PGID" >> .env
+            fi
+            ENV_FILE_STATUS="updated"
+        fi
+    fi
+fi
+
 echo -e "${GREEN}✓ Generated $OUTPUT_FILE successfully!${NC}"
 echo ""
 echo -e "${BLUE}Configuration Summary:${NC}"
 echo "  Architecture: $DETECTED_ARCH"
-echo "  Docker Image: $DOCKER_IMAGE"
-echo "  Secret: $SECRET"
+if [ "$BUILD_LOCAL" = "true" ]; then
+  echo "  Build: context=., dockerfile=Dockerfile"
+else
+  echo "  Docker Image: $DOCKER_IMAGE"
+fi
+if [ "$ENV_SOURCE" = "compose" ]; then
+    echo "  Secret: $SECRET"
+else
+    case "$ENV_FILE_STATUS" in
+        created)
+            echo "  Env source: .env (created with generated secret)"
+            ;;
+        updated)
+            echo "  Env source: .env (updated to match selections)"
+            ;;
+        *)
+            echo "  Env source: .env (no changes)"
+            ;;
+    esac
+fi
 echo "  Storage: $STORAGE_TYPE ($STORAGE_VALUE)"
 echo "  Port: $HOST_PORT"
 if [ "$USE_USER_CONFIG" = "true" ]; then
@@ -490,15 +658,20 @@ fi
 echo ""
 
 # Architecture-specific notes
-if [ "$DETECTED_ARCH" = "arm64" ] && [[ "$DOCKER_IMAGE" == *"hakoforge"* ]]; then
-    echo -e "${CYAN}📝 ARM64 Notes:${NC}"
-    echo "  • Using proven ARM64-native image for optimal performance"
-    echo "  • No emulation overhead - runs natively on your ARM64 system"
-elif [ "$DETECTED_ARCH" = "arm64" ]; then
-    echo -e "${CYAN}📝 ARM64 Notes:${NC}"
-    echo "  • Using multi-arch image (may use emulation)"
-    echo "  • For better performance, consider the native ARM64 image:"
-    echo "    image: hakoforge/hako-foundry:arm64"
+if [ "$DETECTED_ARCH" = "arm64" ]; then
+    if [ "$BUILD_LOCAL" = "true" ]; then
+        echo -e "${CYAN}📝 ARM64 Notes:${NC}"
+        echo "  • Building locally from Dockerfile (ARM64 host)"
+    elif [[ "$DOCKER_IMAGE" == *"hakoforge"* ]]; then
+        echo -e "${CYAN}📝 ARM64 Notes:${NC}"
+        echo "  • Using proven ARM64-native image for optimal performance"
+        echo "  • No emulation overhead - runs natively on your ARM64 system"
+    else
+        echo -e "${CYAN}📝 ARM64 Notes:${NC}"
+        echo "  • Using multi-arch image (may use emulation)"
+        echo "  • For better performance, consider the native ARM64 image:"
+        echo "    image: hakoforge/hako-foundry:arm64"
+    fi
 fi
 echo ""
 

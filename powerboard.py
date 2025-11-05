@@ -391,7 +391,7 @@ class Powerboard:
             if len(analog_readings) != 4:
                 raise ValueError("Expected 4 analog readings")
             # Use new high-accuracy calculation for HW 2.2 variants
-            if str(self._hardware_rev).startswith('2.2'):
+            if str(self._hardware_rev).startswith('2.2') or str(self._hardware_rev).startswith('2.3'):
                 r1, r2, r3, r4 = analog_readings
                 wattages = _calculate_wattage_22(r1, r2, r3, r4, voltage=self.TARGET_VOLTAGE)
             else:

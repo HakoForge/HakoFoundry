@@ -79,6 +79,17 @@ wget -qO setup.sh https://raw.githubusercontent.com/HakoForge/HakoFoundry/main/s
 chmod +x setup.sh
 ./setup.sh
 ```
+## Unraid Quick Start
+
+Once you have your array and the Docker service started, open the terminal and run:
+```bash
+wget https://raw.githubusercontent.com/HakoForge/HakoFoundry/main/unraid-setup.sh -O unraid-setup.sh
+chmod +x unraid-setup.sh
+./unraid-setup.sh
+```
+
+This will create a template that can be used in the `Docker` tab.
+Use this template to pull and start the Foundry.
 
 ## Configure UI and Fans
 

@@ -2,6 +2,6 @@
 nicegui==2.21.1
 pyserial
 xxhash
-passlib[bcrypt]
-
+passlib
+bcrypt==4.0.1
 numpy

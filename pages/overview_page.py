@@ -976,7 +976,7 @@ class SystemOverview:
         config = backplane_configs[backplane_type]
 
         # --- apply flip on the parent card element ---
-        card.classes(add="bp-rotatable" + (" flip-180" if need_flip else ""))
+        card.classes(add="bp-rotatable relative" + (" flip-180" if need_flip else ""))
 
         with card:
             if config["layout"] == "single_column":
@@ -1036,23 +1036,20 @@ class SystemOverview:
                     ui.element('div').classes(f'extension-patch patch-mid-arm-top{cage}')
                     ui.element('div').classes(f'extension-patch patch-mid-arm-bottom{cage}')
 
-            def confirm_remove_backplane(c=card):
-                def on_confirm():
-                    globals.layoutState.remove_backplane(c)
-                    self.add_backplane_button(c, c.__class__)
-                    confirm_dialog.close()
-
-                with ui.dialog().props('persistent') as confirm_dialog, ui.card().classes('p-6'):
-                    ui.label('Change Backplane?').classes('text-xl font-bold mb-4')
-                    ui.label('This will remove the backplane and all its drive assignments.').classes('text-sm text-gray-400 mb-4')
-                    with ui.row().classes('w-full justify-center gap-4'):
-                        ui.button('Yes, Remove', on_click=on_confirm).classes('border-solid border-2 border-red-500 text-red-500 px-6 py-2').props('flat')
-                        ui.button('Cancel', on_click=confirm_dialog.close).classes('border-solid border-2 border-[#ffdd00] text-white px-6 py-2').props('flat')
-                confirm_dialog.open()
+            with ui.dialog().props('persistent') as confirm_dialog, ui.card().classes('p-6'):
+                ui.label('Change Backplane?').classes('text-xl font-bold mb-4')
+                ui.label('This will remove the backplane and all its drive assignments.').classes('text-sm text-gray-400 mb-4')
+                with ui.row().classes('w-full justify-center gap-4'):
+                    ui.button('Yes, Remove', on_click=lambda c=card: (
+                        globals.layoutState.remove_backplane(c),
+                        self.add_backplane_button(c, c.__class__),
+                        confirm_dialog.close()
+                    )).classes('border-solid border-2 border-red-500 text-red-500 px-6 py-2').props('flat')
+                    ui.button('Cancel', on_click=confirm_dialog.close).classes('border-solid border-2 border-[#ffdd00] text-white px-6 py-2').props('flat')
 
             ui.button(
                 icon='swap_horiz',
-                on_click=confirm_remove_backplane
+                on_click=confirm_dialog.open
             ).props('flat round dense size=xs color=grey-5').classes(
                 'absolute top-0 right-0 z-10 opacity-30 hover:opacity-100'
             ).tooltip('Change backplane type')
@@ -1060,7 +1057,7 @@ class SystemOverview:
             with ui.context_menu():
                 ui.menu_item(
                     'Remove Backplane',
-                    on_click=lambda c=card: confirm_remove_backplane(c)
+                    on_click=confirm_dialog.open
                 )
 
     def add_backplane_button(self, card, card_class):

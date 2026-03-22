@@ -115,7 +115,14 @@ class Powerboard:
         # Initialize semaphore for thread-safe serial communication
         self.semaphore = threading.Semaphore()
         self._serial_instance = self._create_serial_connection(com_port)
-        
+
+        # Raw serial responses for debug display (must be declared before any serial calls)
+        self._raw_tach: Optional[str] = None
+        self._raw_wattage: Optional[str] = None
+        self._raw_pwm: Optional[str] = None
+        self._raw_metadata: Optional[str] = None
+        self._raw_jumper: Optional[str] = None
+
         self._read_initial_metadata()
         self._read_initial_pwm_state()
         # Set the fan speed to the eeprom values
@@ -147,13 +154,6 @@ class Powerboard:
         self.watt_sec_1_2: int = None
         self.watt_sec_3_4: int = None
 
-        # Raw serial responses for debug display
-        self._raw_tach: Optional[str] = None
-        self._raw_wattage: Optional[str] = None
-        self._raw_pwm: Optional[str] = None
-        self._raw_metadata: Optional[str] = None
-        self._raw_jumper: Optional[str] = None
-        
         # Update all powerboard state
         self.update_powerboard_state()
 

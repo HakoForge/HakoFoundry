@@ -12,7 +12,7 @@ import page_layout
 logger = logging.getLogger("foundry_logger")
 
 
-def _make_refresh(pb, rpm_labels, pwm_labels, watt_labels, shunt_labels):
+def _make_refresh(pb, rpm_labels, pwm_labels, watt_labels, shunt_labels, raw_labels):
     """Return an async refresh callback bound to a specific powerboard's UI labels."""
     async def refresh():
         try:
@@ -34,6 +34,10 @@ def _make_refresh(pb, rpm_labels, pwm_labels, watt_labels, shunt_labels):
                 for i, label in enumerate(shunt_labels):
                     label.set_text(f'{int(pb._current_wattage[i])} W')
 
+            raw_labels['tach'].set_text(pb._raw_tach or '—')
+            raw_labels['wattage'].set_text(pb._raw_wattage or '—')
+            raw_labels['pwm'].set_text(pb._raw_pwm or '—')
+
         except Exception as e:
             logger.warning(f'Error refreshing powerboard {pb.location} display: {e}')
     return refresh
@@ -49,6 +53,9 @@ async def powerboardsPage():
                         ui.icon('power_off').classes('text-gray-500 text-3xl')
                         ui.label('No powerboards detected.').classes('text-gray-400 text-lg')
                 return
+
+            # ── Debug toggle ──────────────────────────────────────────────
+            debug_toggle = ui.switch('Debug').classes('mb-4 text-gray-400')
 
             for pb_id, pb in sorted(globals.powerboardDict.items()):
                 with ui.card().classes('w-full mb-6 bg-[#1b1b1b] p-0 overflow-hidden'):
@@ -170,11 +177,31 @@ async def powerboardsPage():
                         ui.label('Control Mode:').classes('text-sm text-gray-400')
                         ui.label(mode).classes(f'font-mono text-sm {mode_color}')
 
+                    # ── Debug panel ───────────────────────────────────────────
+                    with ui.element('div').classes('px-5 pb-4') as debug_panel:
+                        ui.separator().classes('mb-3')
+                        ui.label('Raw Serial').classes(
+                            'text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2'
+                        )
+                        raw_labels = {}
+                        for key, attr, label_text in [
+                            ('tach',    '_raw_tach',    'Tach (T:)'),
+                            ('wattage', '_raw_wattage', 'Wattage (W:)'),
+                            ('pwm',     '_raw_pwm',     'PWM (P:)'),
+                        ]:
+                            with ui.row().classes('gap-3 items-baseline'):
+                                ui.label(label_text).classes('text-xs text-gray-500 w-28')
+                                raw_labels[key] = ui.label(
+                                    getattr(pb, attr) or '—'
+                                ).classes('font-mono text-xs text-gray-300')
+                    debug_panel.bind_visibility_from(debug_toggle, 'value')
+
                     # ── Live refresh timer ────────────────────────────────────
                     ui.timer(3.0, _make_refresh(
                         pb,
                         rpm_labels,
                         pwm_labels,
                         [watt_12_label, watt_34_label, watt_total_label],
-                        shunt_labels
+                        shunt_labels,
+                        raw_labels,
                     ))

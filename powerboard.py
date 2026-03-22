@@ -146,6 +146,11 @@ class Powerboard:
 
         self.watt_sec_1_2: int = None
         self.watt_sec_3_4: int = None
+
+        # Raw serial responses for debug display
+        self._raw_tach: Optional[str] = None
+        self._raw_wattage: Optional[str] = None
+        self._raw_pwm: Optional[str] = None
         
         # Update all powerboard state
         self.update_powerboard_state()
@@ -177,6 +182,7 @@ class Powerboard:
         response = self._send_command(self.COMMANDS['get_pwm'])
         if not response:
             raise PowerboardError("Failed to read initial PWM state")
+        self._raw_pwm = response
             
         try:
             pwm_values = [int(x) for x in response.split(',')]
@@ -365,6 +371,7 @@ class Powerboard:
         """Update fan RPM readings from powerboard."""
         with self.semaphore:
             response = self._send_command(self.COMMANDS['get_tach'])
+        self._raw_tach = response
             
         try:
             rpm_values = [int(x) for x in response.split(',')]
@@ -385,6 +392,7 @@ class Powerboard:
         """Update power usage readings from powerboard."""
         with self.semaphore:
             response = self._send_command(self.COMMANDS['get_wattage'])
+        self._raw_wattage = response
             
         try:
             analog_readings = [float(x) for x in response.split(',')]

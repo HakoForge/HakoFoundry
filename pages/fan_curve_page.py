@@ -555,6 +555,11 @@ def fanCurvePage():
                                 "grid_cols": 8,
                                 "std_cards": 6,
                                 "sml_cards": 2
+                            },
+                            "HF-L1": {
+                                "grid_cols": 4,
+                                "std_cards": 3,
+                                "sml_cards": 1
                             }
                         }
                         
@@ -575,7 +580,7 @@ def fanCurvePage():
                                     drive_cards.append(card_widget)
                                 
                                 # Small cards
-                                start_idx = 9 if current_chassis == "Hako-Core" else 6
+                                start_idx = config["std_cards"]
                                 for i, bp in enumerate(backplane_list[start_idx:start_idx + config["sml_cards"]]):
                                     card_widget = create_drive_card(i + start_idx, bp, toggle_drive_selection, "sml", selected_drives)
                                     drive_cards.append(card_widget)

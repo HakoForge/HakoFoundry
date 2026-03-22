@@ -218,11 +218,12 @@ class StdPlaceHolderCard(ui.element):
         self.tabsRight = True
 
         if globals.layoutState.get_product() == "Hako-Core":
-            if (index % 3 == 1): # 2nd row
+            if (index % 3 == 1): # 2nd column
                 self.tabsRight = False
-        if globals.layoutState.get_product() == "Hako-Core Mini":
-            if (index % 2 == 1): # 2nd row
+        elif globals.layoutState.get_product() == "Hako-Core Mini":
+            if (index % 2 == 1): # 2nd column
                 self.tabsRight = False
+        # HF-L1 has only one column — tabsRight stays True
 
         with self.classes('p-0 flex').style(f'aspect-ratio: 1/1; width: 100%; height: 100%; grid-area: {grid_position};'):
             # Will be populated by parent function
@@ -239,11 +240,12 @@ class SmlPlaceHolderCard(ui.element):
         self.tabsRight = True
 
         if globals.layoutState.get_product() == "Hako-Core":
-            if (index % 3 == 1): # 2nd row
+            if (index % 3 == 1): # 2nd column
                 self.tabsRight = False
-        if globals.layoutState.get_product() == "Hako-Core Mini":
-            if (index % 2 == 1): # 2nd row
+        elif globals.layoutState.get_product() == "Hako-Core Mini":
+            if (index % 2 == 1): # 2nd column
                 self.tabsRight = False
+        # HF-L1 has only one column — tabsRight stays True
 
         with self.classes('p-0 flex h-full').style(f'aspect-ratio: 100/87; width: 100%; max-height: 100%; grid-area: {grid_position};'):
             # Will be populated by parent function
@@ -387,6 +389,36 @@ class ChassisLayoutManager:
                     "rpm_positions": ["rpm1", "rpm2"],
                     "watt_positions": ["watt1", "watt2"]
                 }
+            },
+            "HF-L1": {
+                "normal": {
+                    "grid_template_areas": """
+                        "rpm1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 rpm2"
+                        "fan1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 fan2"
+                        "fan1 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 fan2"
+                        "fan1 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 fan2"
+                        "fan1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 fan2"
+                    """,
+                    "fan_positions": ["fan1", "fan2"],
+                    "backplane_positions": ["bp1", "bp2", "bp3"],
+                    "small_positions": ["sml1"],
+                    "rpm_positions": ["rpm1", "rpm2"],
+                    "watt_positions": ["watt1"]
+                },
+                "inverted": {
+                    "grid_template_areas": """
+                        "rpm2 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 watt1 rpm1"
+                        "fan2 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 sml1 fan1"
+                        "fan2 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 bp3 fan1"
+                        "fan2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 bp2 fan1"
+                        "fan2 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 bp1 fan1"
+                    """,
+                    "fan_positions": ["fan1", "fan2"],
+                    "backplane_positions": ["bp1", "bp2", "bp3"],
+                    "small_positions": ["sml1"],
+                    "rpm_positions": ["rpm1", "rpm2"],
+                    "watt_positions": ["watt1"]
+                }
             }
         }
 
@@ -430,6 +462,8 @@ class SystemOverview:
             return i in {0, 1, 3, 4, 6, 7, 9, 10}
         if chassis == "Hako-Core Mini":
             return i in {0, 1, 2, 3, 4, 5, 6, 7}
+        if chassis == "HF-L1":
+            return i in {0, 1, 2, 3}
         return False
 
     def should_rotate_backplane(self, index: int) -> bool:
@@ -440,6 +474,8 @@ class SystemOverview:
             return index in {0,1, 3,4, 6,7, 9,10}
         if chassis == "Hako-Core Mini":
             return index in {0,1, 2,3, 4,5}
+        if chassis == "HF-L1":
+            return index in {0, 1, 2, 3}
         return False
 
     def set_slider_value_without_callback(self, slider_index: int, value: float):
@@ -1115,8 +1151,13 @@ class SystemOverview:
 
         with card:
             # Set width based on chassis type
-            card_width = '50dvw' if chassis_type == "Hako-Core Mini" else '70dvw'
-            # Set grid template rows based on orientation
+            if chassis_type == "Hako-Core Mini":
+                card_width = '50dvw'
+            elif chassis_type == "HF-L1":
+                card_width = '35dvw'
+            else:
+                card_width = '70dvw'
+            # Set grid template rows based on orientation (all chassis share the same 5-row structure)
             grid_rows = '4% 21% 25% 25% 25%' if is_inverted else '4% 25% 25% 25% 21%'
             with ui.element('div').classes('gap-0').style(
                 f'height: 98.9dvh; width: {card_width}; min-width: 800px; min-height: 800px; '
@@ -1189,6 +1230,10 @@ class SystemOverview:
                     chassis_dialog.close()
                     self.create_chassis_layout(main_content, "Hako-Core Mini")
 
+                def select_hf_l1():
+                    chassis_dialog.close()
+                    self.create_chassis_layout(main_content, "HF-L1")
+
                 ui.button(
                     'Hako-Core',
                     on_click=select_hako_core
@@ -1197,6 +1242,11 @@ class SystemOverview:
                 ui.button(
                     'Hako-Core Mini',
                     on_click=select_hako_core_mini
+                ).classes('border-solid border-2 border-[#ffdd00] px-8 py-4').props('flat color="white"')
+
+                ui.button(
+                    'HF-L1',
+                    on_click=select_hf_l1
                 ).classes('border-solid border-2 border-[#ffdd00] px-8 py-4').props('flat color="white"')
 
         chassis_dialog.open()
@@ -1213,7 +1263,7 @@ class SystemOverview:
                     if current_chassis is None:
                         # Show chassis selection dialog
                         self.show_chassis_selection_dialog(main_content)
-                    elif current_chassis in ["Hako-Core", "Hako-Core Mini"]:
+                    elif current_chassis in ["Hako-Core", "Hako-Core Mini", "HF-L1"]:
                         self.create_chassis_layout(main_content, current_chassis)
 
             # Create drawers and dialogs

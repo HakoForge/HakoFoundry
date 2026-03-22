@@ -43,6 +43,12 @@ def frame(navtitle: str):
                     ui.icon('timeline').classes('material-symbols-outlined')
                 with ui.item_section():
                     ui.item_label('Fan Curves').classes('text-nowrap')
+
+            with ui.item().props('clickable v-ripple').on_click(lambda: ui.navigate.to('/powerboards')):
+                with ui.item_section().props('avatar'):
+                    ui.icon('developer_board').classes('material-symbols-outlined')
+                with ui.item_section():
+                    ui.item_label('Powerboards').classes('text-nowrap')
             ui.separator()
             
             with ui.item().props('clickable').on_click(lambda: ui.navigate.to('/settings')):

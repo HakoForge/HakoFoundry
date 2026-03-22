@@ -37,6 +37,8 @@ def _make_refresh(pb, rpm_labels, pwm_labels, watt_labels, shunt_labels, raw_lab
             raw_labels['tach'].set_text(pb._raw_tach or '—')
             raw_labels['wattage'].set_text(pb._raw_wattage or '—')
             raw_labels['pwm'].set_text(pb._raw_pwm or '—')
+            raw_labels['metadata'].set_text(pb._raw_metadata or '—')
+            raw_labels['jumper'].set_text(pb._raw_jumper or '—')
 
         except Exception as e:
             logger.warning(f'Error refreshing powerboard {pb.location} display: {e}')
@@ -185,9 +187,11 @@ async def powerboardsPage():
                         )
                         raw_labels = {}
                         for key, attr, label_text in [
-                            ('tach',    '_raw_tach',    'Tach (T:)'),
-                            ('wattage', '_raw_wattage', 'Wattage (W:)'),
-                            ('pwm',     '_raw_pwm',     'PWM (P:)'),
+                            ('tach',     '_raw_tach',      'Tach (T:)'),
+                            ('wattage',  '_raw_wattage',   'Wattage (W:)'),
+                            ('pwm',      '_raw_pwm',       'PWM (P:)'),
+                            ('metadata', '_raw_metadata',  'Metadata (V:)'),
+                            ('jumper',   '_raw_jumper',    'Jumper (J:)'),
                         ]:
                             with ui.row().classes('gap-3 items-baseline'):
                                 ui.label(label_text).classes('text-xs text-gray-500 w-28')

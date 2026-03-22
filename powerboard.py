@@ -151,6 +151,8 @@ class Powerboard:
         self._raw_tach: Optional[str] = None
         self._raw_wattage: Optional[str] = None
         self._raw_pwm: Optional[str] = None
+        self._raw_metadata: Optional[str] = None
+        self._raw_jumper: Optional[str] = None
         
         # Update all powerboard state
         self.update_powerboard_state()
@@ -287,16 +289,16 @@ class Powerboard:
 
     def get_board_metadata(self) -> Tuple[str, str, str]:
         """Get board metadata including hardware revision, firmware version, and location.
-        
+
         Returns:
             Tuple of (hardware_rev, firmware_ver, location)
-            
+
         Raises:
             PowerboardError: If command fails
         """
         with self.semaphore:
             response = self._send_command(self.COMMANDS['get_metadata'])
-            
+        self._raw_metadata = response
         try:
             parts = response.split(',')
             if len(parts) != 3:
@@ -437,16 +439,16 @@ class Powerboard:
 
     def get_jumper_state(self) -> int:
         """Get jumper status for fan control mode.
-        
+
         Returns:
             1 if jumper is on motherboard fan control, 0 if on powerboard fan control
-            
+
         Raises:
             PowerboardError: If command fails
         """
         with self.semaphore:
             response = self._send_command(self.COMMANDS['get_jumper'])
-            
+        self._raw_jumper = response
         try:
             return int(response)
         except ValueError as e:

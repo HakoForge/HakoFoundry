@@ -56,9 +56,6 @@ async def powerboardsPage():
                         ui.label('No powerboards detected.').classes('text-gray-400 text-lg')
                 return
 
-            # ── Debug toggle ──────────────────────────────────────────────
-            debug_toggle = ui.switch('Debug').classes('mb-4 text-gray-400')
-
             for pb_id, pb in sorted(globals.powerboardDict.items()):
                 with ui.card().classes('w-full mb-6 bg-[#1b1b1b] p-0 overflow-hidden'):
 
@@ -68,13 +65,15 @@ async def powerboardsPage():
                             ui.icon('memory').classes('text-[#ffdd00]')
                             ui.label(f'Powerboard {pb.location}').classes('text-lg font-bold')
                         connected = pb.is_connected
-                        with ui.row().classes('items-center gap-1'):
-                            ui.icon('circle').classes(
-                                f'text-xs {"text-green-400" if connected else "text-red-400"}'
-                            )
-                            ui.label('Connected' if connected else 'Disconnected').classes(
-                                f'text-sm {"text-green-400" if connected else "text-red-400"}'
-                            )
+                        with ui.row().classes('items-center gap-4'):
+                            with ui.row().classes('items-center gap-1'):
+                                ui.icon('circle').classes(
+                                    f'text-xs {"text-green-400" if connected else "text-red-400"}'
+                                )
+                                ui.label('Connected' if connected else 'Disconnected').classes(
+                                    f'text-sm {"text-green-400" if connected else "text-red-400"}'
+                                )
+                            debug_toggle = ui.switch('Debug').props('color="yellowhako" dense').classes('text-xs text-gray-400')
 
                     # ── Board identity ────────────────────────────────────────
                     with ui.row().classes('px-5 py-3 gap-8 flex-wrap'):

@@ -1,23 +1,22 @@
-# For more information, please refer to https://aka.ms/vscode-docker-python
 FROM python:3.11-alpine
-RUN apk add smartmontools
-# Keeps Python from generating .pyc files in the container
-ENV PYTHONDONTWRITEBYTECODE=1
 
-# Turns off buffering for easier container logging
-ENV PYTHONUNBUFFERED=1
+RUN apk add --no-cache smartmontools
 
-# Install pip requirements
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Create non-root user before copying files
+RUN adduser -u 5678 --disabled-password --gecos "" appuser
 
 WORKDIR /app
-COPY . /app
 
-# Creates a non-root user with an explicit UID and adds permission to access the /app folder
-# For more info, please refer to https://aka.ms/vscode-docker-python-configure-containers
-RUN adduser -u 5678 --disabled-password --gecos "" appuser && chown -R appuser /app
+# Install dependencies first for better layer caching
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# During debugging, this entry point will be overridden. For more information, please refer to https://aka.ms/vscode-docker-python-debug
+# Copy app files with correct ownership in one step
+COPY --chown=appuser:appuser . /app
+
+USER appuser
 
 CMD ["python3", "main.py"]

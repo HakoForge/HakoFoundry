@@ -139,7 +139,9 @@ class Powerboard:
         elif self._hardware_rev.startswith('2.2'):
             self.ADC_SLOPE = 3.284
             self.ADC_INTERCEPT = -1.069 
-        
+        else:
+            self.ADC_SLOPE = 3.284
+            self.ADC_INTERCEPT = -1.069 
         
         # Initialize other state variables
         self._current_fan_rpm: Optional[Tuple[int, int, int]] = None

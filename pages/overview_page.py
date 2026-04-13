@@ -1,8 +1,7 @@
 from typing import Optional
-from nicegui import app, ui, run
+from nicegui import app, ui
 from authentication import require_auth
-from powerboard import Powerboard
-from foundry_state import Chassis, Backplane, Drive
+from foundry_state import Backplane, Drive
 import xxhash
 import page_layout
 import globals
@@ -48,12 +47,12 @@ class DriveButton(ui.button):
         drive_hash = xxhash.xxh3_64(sn).intdigest()
         self.assigned_drive = globals.drivesList[drive_hash]
 
-        if globals.layoutState.show_model == True:
+        if globals.layoutState.show_model:
             self.model_label.style('color: white')
             self.model_label.set_text(self.assigned_drive.model)
         else:
             self.model_label.set_visibility(False)
-        if globals.layoutState.show_sn == True:
+        if globals.layoutState.show_sn:
             self.sn_label.set_visibility(True)
             self.sn_label.style('color: white')
             self.sn_label.set_text(self.assigned_drive.serial_num)
@@ -98,9 +97,9 @@ class HDDButton(DriveButton):
                     'overflow-hidden whitespace-nowrap text-ellipsis flex-1 min-w-0'
                 ).style('display: block;')
 
-                if globals.layoutState.show_model == False and self.assigned_drive != None:
+                if not globals.layoutState.show_model and self.assigned_drive is not None:
                     self.model_label.set_visibility(False)
-                if globals.layoutState.show_sn == False or self.assigned_drive is None:
+                if not globals.layoutState.show_sn or self.assigned_drive is None:
                     self.sn_label.set_visibility(False)
 
 class SmlSSDButton(DriveButton):
@@ -120,9 +119,9 @@ class SmlSSDButton(DriveButton):
                 'overflow-hidden whitespace-nowrap text-ellipsis flex-1 min-w-0'
             ).style('display: block; direction: rtl;')
 
-            if globals.layoutState.show_model == False and self.assigned_drive != None:
+            if not globals.layoutState.show_model and self.assigned_drive is not None:
                 self.model_label.set_visibility(False)
-            if globals.layoutState.show_sn == False or self.assigned_drive is None:
+            if not globals.layoutState.show_sn or self.assigned_drive is None:
                 self.sn_label.set_visibility(False)
 
 class StdSSDButton(DriveButton):
@@ -142,9 +141,9 @@ class StdSSDButton(DriveButton):
                 'overflow-hidden whitespace-nowrap text-ellipsis flex-1 min-w-0'
             ).style('display: block; direction: rtl;')
 
-            if globals.layoutState.show_model == False and self.assigned_drive != None:
+            if not globals.layoutState.show_model and self.assigned_drive is not None:
                 self.model_label.set_visibility(False)
-            if globals.layoutState.show_sn == False or self.assigned_drive is None:
+            if not globals.layoutState.show_sn or self.assigned_drive is None:
                 self.sn_label.set_visibility(False)
 
 class FansRowButton(ui.button):
@@ -675,7 +674,7 @@ class SystemOverview:
                                 current_temp = globals.fan_profile_service.get_sensor_temperature(sensor_name) if globals.fan_profile_service else None
                                 temp_display = globals.format_temperature(current_temp) if current_temp is not None else "N/A"
                                 label.set_text(temp_display)
-                            except Exception as e:
+                            except Exception:
                                 label.set_text("Error")
 
                         # Initial update
@@ -1093,13 +1092,7 @@ class SystemOverview:
                 f'display: grid; grid-template-areas: {grid_template_areas}; '
                 f'grid-template-rows: {grid_rows}; '
                 f'grid-template-columns: repeat({"23" if chassis_type == "Hako-Core DAS" else "24"}, 1fr);'
-            ) as grid_container:
-
-                def wall_assigned(wall_id: int) -> bool:
-                    if not globals.fan_control_service:
-                        return False
-                    wall = globals.fan_control_service.fan_walls.get(wall_id)
-                    return wall is not None and wall.powerboard_id is not None
+            ):
 
                 def wall_assigned(wall_id: int) -> bool:
                     if not globals.fan_control_service:

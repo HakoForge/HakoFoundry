@@ -259,7 +259,7 @@ def settingsPage():
                 with ui.grid(columns=2).classes('gap-0 w-full').style('grid-auto-rows: 1fr;'):
                     ui.label('Chassis Layout:').classes('flex justify-start items-center')
                     product_select = ui.select(
-                        ['Hako-Core', 'Hako-Core Mini'],
+                        ['Hako-Core', 'Hako-Core Mini', 'HF-L1'],
                         value=globals.layoutState.get_product(),
                         on_change=handle_product_change
                     )

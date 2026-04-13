@@ -19,6 +19,11 @@ class FoundryStateError(Exception):
     pass
 
 
+class DriveStandbyError(Exception):
+    """Raised when a drive is in standby/sleep and should not be woken."""
+    pass
+
+
 @dataclass
 class DriveInfo:
     """Data class for drive information."""
@@ -108,8 +113,12 @@ class Drive:
 class SmartCtlInterface:
     """Interface for smartctl operations."""
     @staticmethod
-    def execute_command(args: str, timeout: int = 30) -> str:
-        """Execute smartctl command with timeout and error handling."""
+    def execute_command(args: str, timeout: int = 30) -> tuple[str, int]:
+        """Execute smartctl command with timeout and error handling.
+
+        Returns:
+            Tuple of (stdout, returncode).
+        """
         try:
             cmd = f"smartctl {args}"
             result = subprocess.run(
@@ -124,7 +133,7 @@ class SmartCtlInterface:
             if result.returncode < 0:  # Negative return codes indicate serious errors
                 raise FoundryStateError(f"smartctl command failed: {result.stderr}")
 
-            return result.stdout
+            return result.stdout, result.returncode
 
         except subprocess.TimeoutExpired:
             logger.error(f"smartctl command timed out: {cmd}")
@@ -137,7 +146,7 @@ class SmartCtlInterface:
     def get_drive_ids(cls) -> List[str]:
         """Get list of available drive IDs."""
         try:
-            output = cls.execute_command("--scan")
+            output, _ = cls.execute_command("--scan")
             lines = output.strip().splitlines()
             device_list = [line.strip() for line in lines if line.strip()]
             logger.info(f"Found {len(device_list)} drives")
@@ -151,7 +160,12 @@ class SmartCtlInterface:
         """Get S.M.A.R.T. data for a specific device."""
         try:
             device_path = device_id.split(' ')[0]
-            json_output = cls.execute_command(f"--xall --json --device auto {device_path}")
+            json_output, returncode = cls.execute_command(f"-n standby --xall --json --device auto {device_path}")
+
+            # Exit code 2 means the drive is in standby/sleep — do not wake it.
+            if returncode == 2:
+                logger.debug(f"Drive {device_path} is spun down, skipping query")
+                raise DriveStandbyError(device_path)
 
             if not json_output.strip():
                 logger.warning(f"No output from smartctl for device {device_path}")
@@ -166,6 +180,8 @@ class SmartCtlInterface:
 
             return drive
 
+        except DriveStandbyError:
+            raise  # Let caller handle standby drives
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON for device {device_id}: {e}")
             return None
@@ -269,8 +285,9 @@ class SmartCtlInterface:
 class DriveManager:
     """Manages drive detection and caching."""
 
-    def __init__(self, debug,cache_duration: int = 300):  # 5 minutes cache
+    def __init__(self, debug, cache_duration: int = 300):  # 5 minutes cache
         self._drive_cache: Dict[int, Drive] = {}
+        self._device_path_to_hash: Dict[str, int] = {}  # device path → drive hash
         self._last_scan_time: float = 0
         self._cache_duration = cache_duration
         self._debug = debug
@@ -300,13 +317,24 @@ class DriveManager:
         drive_ids = SmartCtlInterface.get_drive_ids()
 
         for device_id in drive_ids:
+            device_path = device_id.split(' ')[0]
             try:
                 drive = SmartCtlInterface.get_smart_data(device_id, self._debug)
                 if drive:
                     drives[drive.hash] = drive
+                    self._device_path_to_hash[device_path] = drive.hash
                     logger.info(f"Added drive: {drive.model} ({drive.serial_num})")
                 else:
                     logger.warning(f"Failed to get data for device: {device_id}")
+
+            except DriveStandbyError:
+                # Drive is asleep — preserve its cached data so it isn't evicted.
+                cached_hash = self._device_path_to_hash.get(device_path)
+                if cached_hash is not None and cached_hash in self._drive_cache:
+                    drives[cached_hash] = self._drive_cache[cached_hash]
+                    logger.debug(f"Drive {device_path} is in standby, retaining cached data")
+                else:
+                    logger.debug(f"Drive {device_path} is in standby, no cached data available yet")
 
             except Exception as e:
                 logger.error(f"Error processing device {device_id}: {e}")

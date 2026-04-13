@@ -115,7 +115,14 @@ class Powerboard:
         # Initialize semaphore for thread-safe serial communication
         self.semaphore = threading.Semaphore()
         self._serial_instance = self._create_serial_connection(com_port)
-        
+
+        # Raw serial responses for debug display (must be declared before any serial calls)
+        self._raw_tach: Optional[str] = None
+        self._raw_wattage: Optional[str] = None
+        self._raw_pwm: Optional[str] = None
+        self._raw_metadata: Optional[str] = None
+        self._raw_jumper: Optional[str] = None
+
         self._read_initial_metadata()
         self._read_initial_pwm_state()
         # Set the fan speed to the eeprom values
@@ -146,7 +153,7 @@ class Powerboard:
 
         self.watt_sec_1_2: int = None
         self.watt_sec_3_4: int = None
-        
+
         # Update all powerboard state
         self.update_powerboard_state()
 
@@ -177,6 +184,7 @@ class Powerboard:
         response = self._send_command(self.COMMANDS['get_pwm'])
         if not response:
             raise PowerboardError("Failed to read initial PWM state")
+        self._raw_pwm = response
             
         try:
             pwm_values = [int(x) for x in response.split(',')]
@@ -281,16 +289,16 @@ class Powerboard:
 
     def get_board_metadata(self) -> Tuple[str, str, str]:
         """Get board metadata including hardware revision, firmware version, and location.
-        
+
         Returns:
             Tuple of (hardware_rev, firmware_ver, location)
-            
+
         Raises:
             PowerboardError: If command fails
         """
         with self.semaphore:
             response = self._send_command(self.COMMANDS['get_metadata'])
-            
+        self._raw_metadata = response
         try:
             parts = response.split(',')
             if len(parts) != 3:
@@ -365,6 +373,7 @@ class Powerboard:
         """Update fan RPM readings from powerboard."""
         with self.semaphore:
             response = self._send_command(self.COMMANDS['get_tach'])
+        self._raw_tach = response
             
         try:
             rpm_values = [int(x) for x in response.split(',')]
@@ -385,6 +394,7 @@ class Powerboard:
         """Update power usage readings from powerboard."""
         with self.semaphore:
             response = self._send_command(self.COMMANDS['get_wattage'])
+        self._raw_wattage = response
             
         try:
             analog_readings = [float(x) for x in response.split(',')]
@@ -429,16 +439,16 @@ class Powerboard:
 
     def get_jumper_state(self) -> int:
         """Get jumper status for fan control mode.
-        
+
         Returns:
             1 if jumper is on motherboard fan control, 0 if on powerboard fan control
-            
+
         Raises:
             PowerboardError: If command fails
         """
         with self.semaphore:
             response = self._send_command(self.COMMANDS['get_jumper'])
-            
+        self._raw_jumper = response
         try:
             return int(response)
         except ValueError as e:

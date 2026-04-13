@@ -60,6 +60,10 @@ class DriveButton(ui.button):
         self.temp_label.set_visibility(True)
         self.temp_label.style('color: white')
         self.temp_label.bind_text_from(self.assigned_drive, 'temp', lambda temp: globals.format_temperature(temp))
+        if hasattr(self, 'remove_btn'):
+            self.remove_btn.set_visibility(True)
+        if hasattr(self, 'remove_menu_item'):
+            self.remove_menu_item.set_visibility(True)
 
     async def clear_drive(self):
         """Remove the assigned drive from this button."""
@@ -69,6 +73,10 @@ class DriveButton(ui.button):
         self.model_label.set_visibility(True)
         self.temp_label.set_visibility(False)
         self.sn_label.set_visibility(False)
+        if hasattr(self, 'remove_btn'):
+            self.remove_btn.set_visibility(False)
+        if hasattr(self, 'remove_menu_item'):
+            self.remove_menu_item.set_visibility(False)
         if self.on_click_handler:
             await self.on_click_handler(self)
 
@@ -167,45 +175,85 @@ class FanRowButtons(ui.element):
                 self.row_Of_Buttons.extend([b1, b2, b3])
 
 class RPMCard(ui.element):
-    """Button for fan row controls."""
+    """Displays RPM for the fan wall assigned to this grid position."""
 
     def __init__(self, index, grid_position: str) -> None:
         super().__init__('div')
+        wall_id = index + 1  # position 0 → wall 1, 1 → wall 2, 2 → wall 3
+        rpm_attrs = ['row1_rpm', 'row2_rpm', 'row3_rpm']
 
         with self.classes('px-1 p-1 flex content-center justify-center items-center w-full border-solid border-white rounded-md border-2 bg-neutral-900').style(f'grid-area: {grid_position};'):
-            if 1 in globals.powerboardDict:
-                match index:
-                    case 0:
-                        self.RPMLabel = ui.label().bind_text_from(globals.powerboardDict[1], 'row1_rpm', lambda rpm: f'{rpm} RPM')
-                    case 1:
-                        self.RPMLabel = ui.label().bind_text_from(globals.powerboardDict[1], 'row2_rpm', lambda rpm: f'{rpm} RPM')
-                    case 2:
-                        self.RPMLabel = ui.label().bind_text_from(globals.powerboardDict[1], 'row3_rpm', lambda rpm: f'{rpm} RPM')
+            wall = globals.fan_control_service.fan_walls.get(wall_id) if globals.fan_control_service else None
+            pb = next((p for p in globals.powerboardDict.values() if p.location == wall.powerboard_id), None) if wall and wall.powerboard_id is not None else None
+            if pb and wall.header_index is not None:
+                attr = rpm_attrs[wall.header_index]
+                self.RPMLabel = ui.label().bind_text_from(pb, attr, lambda rpm: f'{rpm} RPM')
             else:
                 ui.label('N/A').classes('text-gray-500 italic')
 
+
 class WattageCard(ui.element):
-    """Card to show wattage info from powerboard."""
+    """Displays wattage for the fan wall assigned to this grid position."""
+
+    # Physical wattage section per header index (board-level, not remappable per header)
+    _WATT_ATTRS = ['watt_sec_1_2', 'watt_sec_3_4', 'watt_sec_1_2', 'watt_sec_3_4']
 
     def __init__(self, index, grid_position: str) -> None:
         super().__init__('div')
+        wall_id = index + 1  # position 0 → wall 1, 1 → wall 2, 2 → wall 3, 3 → wall 4
+
         with self.classes('px-1 p-1 flex content-center justify-center items-center w-full border-solid border-white rounded-md border-2 bg-neutral-900').style(f'grid-area: {grid_position};'):
-            match index:
-                case 0:
-                    if 1 in globals.powerboardDict:
-                        self.watt_label = ui.label().bind_text_from(globals.powerboardDict[1], 'watt_sec_1_2', lambda wattage: f'Row 1: {wattage} watts')
-                    else:
-                        self.watt_label = ui.label('N/A').classes('text-gray-500 italic')
-                case 1:
-                    if 1 in globals.powerboardDict:
-                        self.watt_label = ui.label().bind_text_from(globals.powerboardDict[1], 'watt_sec_3_4', lambda wattage: f'Row 2: {wattage} watts')
-                    else:
-                        self.watt_label = ui.label('N/A').classes('text-gray-500 italic')
-                case 2:
-                    if 2 in globals.powerboardDict:
-                        self.watt_label = ui.label().bind_text_from(globals.powerboardDict[2], 'watt_sec_1_2', lambda wattage: f'Row 3: {wattage} watts')
-                    else:
-                        self.watt_label = ui.label('N/A').classes('text-gray-500 italic')
+            wall = globals.fan_control_service.fan_walls.get(wall_id) if globals.fan_control_service else None
+
+            # Priority 1: explicit wattage source configured independently of fan control
+            if wall and wall.watt_powerboard_id is not None and wall.watt_attr is not None:
+                pb = next((p for p in globals.powerboardDict.values() if p.location == wall.watt_powerboard_id), None)
+                watt_attr = wall.watt_attr
+            else:
+                # Priority 2: derive from fan wall assignment
+                pb = next((p for p in globals.powerboardDict.values() if p.location == wall.powerboard_id), None) if wall and wall.powerboard_id is not None else None
+                # Priority 3: fall back to pb1
+                if pb is None:
+                    pb = next((p for p in globals.powerboardDict.values() if p.location == 1), None)
+                watt_attr = self._WATT_ATTRS[min(wall.header_index, len(self._WATT_ATTRS) - 1)] if wall and wall.header_index is not None else self._WATT_ATTRS[min(index, len(self._WATT_ATTRS) - 1)]
+
+            if pb:
+                row_label = wall.watt_label if (wall and wall.watt_label) else f'Row {index + 1}'
+                self.watt_label = ui.label().bind_text_from(
+                    pb, watt_attr, lambda w, lbl=row_label: f'{lbl}: {w} watts'
+                )
+            else:
+                self.watt_label = ui.label('N/A').classes('text-gray-500 italic')
+
+
+class AuxFanCard(ui.element):
+    """Compact status card for auxiliary/unassigned fan walls shown in the bottom bar."""
+
+    _RPM_ATTRS = ['row1_rpm', 'row2_rpm', 'row3_rpm']
+
+    def __init__(self, wall_id: int) -> None:
+        super().__init__('div')
+        self.selected = False
+        wall = globals.fan_control_service.fan_walls.get(wall_id) if globals.fan_control_service else None
+        pb = next(
+            (p for p in globals.powerboardDict.values() if p.location == wall.powerboard_id),
+            None
+        ) if wall and wall.powerboard_id is not None else None
+
+        with self.classes(
+            'flex flex-col items-center justify-center px-3 py-2 border-solid border-white '
+            'rounded-md border-2 bg-neutral-900 cursor-pointer min-w-[110px] gap-0.5'
+        ):
+            if wall:
+                ui.label(wall.name).classes('text-xs font-medium text-center leading-tight')
+                if pb and wall.header_index is not None:
+                    attr = self._RPM_ATTRS[wall.header_index]
+                    ui.label().bind_text_from(pb, attr, lambda rpm: f'{rpm} RPM').classes('text-xs text-gray-400')
+                else:
+                    ui.label('Unassigned').classes('text-xs text-gray-500 italic')
+                ui.label().bind_text_from(wall, 'current_speed', lambda s: f'{int(s)}%').classes('text-sm font-bold')
+            else:
+                ui.label(f'Zone {wall_id}').classes('text-xs text-gray-500 italic')
 
 
 class StdPlaceHolderCard(ui.element):
@@ -219,6 +267,9 @@ class StdPlaceHolderCard(ui.element):
 
         if globals.layoutState.get_product() == "Hako-Core":
             if (index % 3 == 1): # 2nd column
+                self.tabsRight = False
+        elif globals.layoutState.get_product() == "Hako-Core DAS":
+            if (index % 4 in {1, 3}): # 2nd and 4th columns
                 self.tabsRight = False
         elif globals.layoutState.get_product() == "Hako-Core Mini":
             if (index % 2 == 1): # 2nd column
@@ -241,6 +292,9 @@ class SmlPlaceHolderCard(ui.element):
 
         if globals.layoutState.get_product() == "Hako-Core":
             if (index % 3 == 1): # 2nd column
+                self.tabsRight = False
+        elif globals.layoutState.get_product() == "Hako-Core DAS":
+            if (index % 4 in {1, 3}): # 2nd and 4th columns
                 self.tabsRight = False
         elif globals.layoutState.get_product() == "Hako-Core Mini":
             if (index % 2 == 1): # 2nd column
@@ -360,6 +414,38 @@ class ChassisLayoutManager:
                     "watt_positions": ["watt1", "watt2", "watt3"]
                 }
             },
+            "Hako-Core DAS": {
+                # 3 fan walls, 4 drive columns (cols 1+3 share orientation, cols 2+4 share orientation)
+                # Grid uses 23 columns: fan(1) + col(5) + fan(1) + col(5) + col(5) + fan(1) + col(5)
+                "normal": {
+                    "grid_template_areas": """
+                        "rpm1 watt1 watt1 watt1 watt1 watt1 rpm2 watt2 watt2 watt2 watt2 watt2 watt3 watt3 watt3 watt3 watt3 rpm3 watt4 watt4 watt4 watt4 watt4"
+                        "fan1 bp1 bp1 bp1 bp1 bp1 fan2 bp2 bp2 bp2 bp2 bp2 bp3 bp3 bp3 bp3 bp3 fan3 bp4 bp4 bp4 bp4 bp4"
+                        "fan1 bp5 bp5 bp5 bp5 bp5 fan2 bp6 bp6 bp6 bp6 bp6 bp7 bp7 bp7 bp7 bp7 fan3 bp8 bp8 bp8 bp8 bp8"
+                        "fan1 bp9 bp9 bp9 bp9 bp9 fan2 bp10 bp10 bp10 bp10 bp10 bp11 bp11 bp11 bp11 bp11 fan3 bp12 bp12 bp12 bp12 bp12"
+                        "fan1 sml1 sml1 sml1 sml1 sml1 fan2 sml2 sml2 sml2 sml2 sml2 sml3 sml3 sml3 sml3 sml3 fan3 sml4 sml4 sml4 sml4 sml4"
+                    """,
+                    "fan_positions": ["fan1", "fan2", "fan3"],
+                    "backplane_positions": ["bp1", "bp2", "bp3", "bp4", "bp5", "bp6", "bp7", "bp8", "bp9", "bp10", "bp11", "bp12"],
+                    "small_positions": ["sml1", "sml2", "sml3", "sml4"],
+                    "rpm_positions": ["rpm1", "rpm2", "rpm3"],
+                    "watt_positions": ["watt1", "watt2", "watt3", "watt4"]
+                },
+                "inverted": {
+                    "grid_template_areas": """
+                        "watt4 watt4 watt4 watt4 watt4 rpm3 watt3 watt3 watt3 watt3 watt3 watt2 watt2 watt2 watt2 watt2 rpm2 watt1 watt1 watt1 watt1 watt1 rpm1"
+                        "sml4 sml4 sml4 sml4 sml4 fan3 sml3 sml3 sml3 sml3 sml3 sml2 sml2 sml2 sml2 sml2 fan2 sml1 sml1 sml1 sml1 sml1 fan1"
+                        "bp12 bp12 bp12 bp12 bp12 fan3 bp11 bp11 bp11 bp11 bp11 bp10 bp10 bp10 bp10 bp10 fan2 bp9 bp9 bp9 bp9 bp9 fan1"
+                        "bp8 bp8 bp8 bp8 bp8 fan3 bp7 bp7 bp7 bp7 bp7 bp6 bp6 bp6 bp6 bp6 fan2 bp5 bp5 bp5 bp5 bp5 fan1"
+                        "bp4 bp4 bp4 bp4 bp4 fan3 bp3 bp3 bp3 bp3 bp3 bp2 bp2 bp2 bp2 bp2 fan2 bp1 bp1 bp1 bp1 bp1 fan1"
+                    """,
+                    "fan_positions": ["fan1", "fan2", "fan3"],
+                    "backplane_positions": ["bp1", "bp2", "bp3", "bp4", "bp5", "bp6", "bp7", "bp8", "bp9", "bp10", "bp11", "bp12"],
+                    "small_positions": ["sml1", "sml2", "sml3", "sml4"],
+                    "rpm_positions": ["rpm1", "rpm2", "rpm3"],
+                    "watt_positions": ["watt1", "watt2", "watt3", "watt4"]
+                }
+            },
             "Hako-Core Mini": {
                 "normal": {
                     "grid_template_areas": """
@@ -460,6 +546,8 @@ class SystemOverview:
         chassis = globals.layoutState.get_product()
         if chassis == "Hako-Core":
             return i in {0, 1, 3, 4, 6, 7, 9, 10}
+        if chassis == "Hako-Core DAS":
+            return i in {0, 1, 2, 4, 5, 6, 8, 9, 10}
         if chassis == "Hako-Core Mini":
             return i in {0, 1, 2, 3, 4, 5, 6, 7}
         if chassis == "HF-L1":
@@ -472,6 +560,8 @@ class SystemOverview:
         chassis = globals.layoutState.get_product()
         if chassis == "Hako-Core":
             return index in {0,1, 3,4, 6,7, 9,10}
+        if chassis == "Hako-Core DAS":
+            return index in {0,1,2, 4,5,6, 8,9,10}
         if chassis == "Hako-Core Mini":
             return index in {0,1, 2,3, 4,5}
         if chassis == "HF-L1":
@@ -611,267 +701,78 @@ class SystemOverview:
                     ui.label('No powerboards detected.').classes('text-gray-500 italic')
                 return
 
-            # Get available fan profiles
             profile_options = self.fan_control_service.get_fan_profile_options()
 
-            if 1 in globals.powerboardDict:  # Display fan speeds
-                # Get current fan wall states
-                wall_1 = self.fan_control_service.fan_walls.get(1)
-                wall_2 = self.fan_control_service.fan_walls.get(2)
-                wall_3 = self.fan_control_service.fan_walls.get(3)
+            # wall_id → slider_list index
+            wall_slider_map = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5}
+            first_visible = True
 
-                # Fan Wall 1
-                with ui.row().classes('w-full items-center justify-between px-5 mt-5'):
-                    ui.label('Fan Wall 1').tooltip('Hidden fan header hidden under first powerboard.')
-                    manual_checkbox_1 = ui.checkbox('Manual', value=wall_1.manual).classes('text-sm')
+            for wall_id, slider_idx in wall_slider_map.items():
+                wall = self.fan_control_service.fan_walls.get(wall_id)
+                if not wall:
+                    continue
+                # Only show walls whose assigned powerboard is connected
+                if wall.powerboard_id not in globals.powerboardDict:
+                    continue
 
-                with ui.element('div').classes('px-5 pt-4 w-full'):
-                    self.slider_list[0] = ui.slider(
-                        min=20, max=100
-                    ).props('label-always')
-                    self.slider_list[0].bind_value(self.fan_control_service.fan_walls[1], 'current_speed')
-                    self.slider_list[0].set_enabled(wall_1.manual)  # Enabled based on manual state
+                if not first_visible:
+                    ui.separator()
+                first_visible = False
 
-                # Profile selection for Fan Wall 1 - hide when manual mode is enabled
-                profile_container_1 = ui.element('div').classes('px-5 pb-2 w-full')
-                with profile_container_1:
-                    profile_select_1 = ui.select(
+                # Header row: wall name + assignment subtitle + manual checkbox
+                header_label = wall.name
+                if wall.powerboard_id is not None and wall.header_index is not None:
+                    assignment_sub = f'PB{wall.powerboard_id} · Row {wall.header_index + 1}'
+                else:
+                    assignment_sub = 'Unassigned'
+
+                with ui.row().classes('w-full items-center justify-between px-5 mt-3'):
+                    with ui.column().classes('gap-0'):
+                        ui.label(header_label).classes('font-medium')
+                        ui.label(assignment_sub).classes('text-xs text-gray-500')
+                    manual_checkbox = ui.checkbox('Manual', value=wall.manual).classes('text-sm')
+
+                with ui.element('div').classes('px-5 pt-3 w-full'):
+                    self.slider_list[slider_idx] = ui.slider(min=20, max=100).props('label-always')
+                    self.slider_list[slider_idx].bind_value(wall, 'current_speed')
+                    self.slider_list[slider_idx].set_enabled(wall.manual)
+
+                profile_container = ui.element('div').classes('px-5 pb-2 w-full')
+                with profile_container:
+                    profile_select = ui.select(
                         options=profile_options,
                         label='Fan Profile',
-                        value=wall_1.assigned_profile if wall_1 and wall_1.assigned_profile in profile_options else profile_options[0]
+                        value=wall.assigned_profile if wall.assigned_profile in profile_options else (profile_options[0] if profile_options else None)
                     ).classes('w-full')
+                    profile_select.set_enabled(not wall.manual)
 
-                    profile_select_1.set_enabled(not (wall_1.manual if wall_1 else True))  # Enabled based on manual state
+                if wall.manual:
+                    profile_container.set_visibility(False)
 
-                # Hide/show profile container based on manual state
-                if wall_1 and wall_1.manual:
-                    profile_container_1.set_visibility(False)
+                if wall.assigned_profile and wall.assigned_profile != 'None' and not wall.manual:
+                    self.display_profile_sensors(wall.assigned_profile, 'px-5 pb-2 w-full')
 
-                # Display selected temperature sensors and values for Fan Wall 1
-                if wall_1 and wall_1.assigned_profile and wall_1.assigned_profile != 'None' and not wall_1.manual:
-                    self.display_profile_sensors(wall_1.assigned_profile, 'px-5 pb-2 w-full')
-
-                # Connect checkbox to slider/profile for Fan Wall 1
-                def toggle_fan_wall_1(e):
-                    self.slider_list[0].set_enabled(e.value)
-                    profile_select_1.set_enabled(not e.value)
-                    profile_container_1.set_visibility(not e.value)  # Hide when manual, show when profile mode
-
-                    # Update fan wall service
-                    self.fan_control_service.set_manual_mode(1, e.value)
-
-                    # When manual is unchecked, assign the first available fan profile
-                    if not e.value and profile_options:
-                        first_profile = profile_options[0]
-                        profile_select_1.set_value(first_profile)
-                        self.fan_control_service.assign_profile_to_wall(1, first_profile)
-
-                    # Refresh drawer to update sensor displays
-                    self.setup_fan_drawer()
-
-                manual_checkbox_1.on_value_change(toggle_fan_wall_1)
-
-                # Handle profile selection for Fan Wall 1
-                def on_profile_select_1(e):
-                    if not manual_checkbox_1.value:
-                        self.fan_control_service.assign_profile_to_wall(1, e.value)
-                        # Refresh drawer to update sensor displays
+                def make_toggle(wid, sidx, psel, pcont):
+                    def toggle(e):
+                        self.slider_list[sidx].set_enabled(e.value)
+                        psel.set_enabled(not e.value)
+                        pcont.set_visibility(not e.value)
+                        self.fan_control_service.set_manual_mode(wid, e.value)
+                        if not e.value and profile_options:
+                            psel.set_value(profile_options[0])
+                            self.fan_control_service.assign_profile_to_wall(wid, profile_options[0])
                         self.setup_fan_drawer()
+                    return toggle
 
-                profile_select_1.on_value_change(on_profile_select_1)
+                def make_profile_select(wid, mcb):
+                    def on_select(e):
+                        if not mcb.value:
+                            self.fan_control_service.assign_profile_to_wall(wid, e.value)
+                            self.setup_fan_drawer()
+                    return on_select
 
-                ui.separator()
-
-                # Fan Wall 2
-                with ui.row().classes('w-full items-center justify-between px-5 mb-2'):
-                    ui.label('Fan Wall 2').tooltip('Hidden fan header hidden under first powerboard.')
-                    manual_checkbox_2 = ui.checkbox('Manual', value=wall_2.manual if wall_2 else True).classes('text-sm')
-
-                with ui.element('div').classes('px-5 pt-1 w-full'):
-                    self.slider_list[1] = ui.slider(
-                        min=20, max=100,
-                    ).props('label-always')
-                    self.slider_list[1].bind_value(self.fan_control_service.fan_walls[2], 'current_speed')
-                    self.slider_list[1].set_enabled(wall_2.manual if wall_2 else True)  # Enabled based on manual state
-
-                # Profile selection for Fan Wall 2 - hide when manual mode is enabled
-                profile_container_2 = ui.element('div').classes('px-5 pb-2 w-full')
-                with profile_container_2:
-                    profile_select_2 = ui.select(
-                        options=profile_options,
-                        label='Fan Profile',
-                        value=wall_2.assigned_profile if wall_2 and wall_2.assigned_profile in profile_options else profile_options[0]
-                    ).classes('w-full')
-                    profile_select_2.set_enabled(not (wall_2.manual if wall_2 else True))  # Enabled based on manual state
-
-                # Hide/show profile container based on manual state
-                if wall_2 and wall_2.manual:
-                    profile_container_2.set_visibility(False)
-
-                # Display selected temperature sensors and values for Fan Wall 2
-                if wall_2 and wall_2.assigned_profile and wall_2.assigned_profile != 'None' and not wall_2.manual:
-                    self.display_profile_sensors(wall_2.assigned_profile, 'px-5 pb-2 w-full')
-
-                # Connect checkbox to slider/profile for Fan Wall 2
-                def toggle_fan_wall_2(e):
-                    self.slider_list[1].set_enabled(e.value)
-                    profile_select_2.set_enabled(not e.value)
-                    profile_container_2.set_visibility(not e.value)  # Hide when manual, show when profile mode
-
-                    # Update fan wall service
-                    self.fan_control_service.set_manual_mode(2, e.value)
-
-                    # When manual is unchecked, assign the first available fan profile
-                    if not e.value and profile_options:
-                        first_profile = profile_options[0]
-                        profile_select_2.set_value(first_profile)
-                        self.fan_control_service.assign_profile_to_wall(2, first_profile)
-
-                    # Refresh drawer to update sensor displays
-                    self.setup_fan_drawer()
-
-                manual_checkbox_2.on_value_change(toggle_fan_wall_2)
-
-                # Handle profile selection for Fan Wall 2
-                def on_profile_select_2(e):
-                    if not manual_checkbox_2.value:
-                        self.fan_control_service.assign_profile_to_wall(2, e.value)
-                        # Refresh drawer to update sensor displays
-                        self.setup_fan_drawer()
-
-                profile_select_2.on_value_change(on_profile_select_2)
-
-                ui.separator()
-
-                # Fan Wall 3
-                with ui.row().classes('w-full items-center justify-between px-5 mb-2'):
-                    ui.label('Fan Wall 3').tooltip('Exposed fan headers on the first powerboard.')
-                    manual_checkbox_3 = ui.checkbox('Manual', value=wall_3.manual if wall_3 else True).classes('text-sm')
-
-                with ui.element('div').classes('px-5 pt-1 w-full'):
-                    self.slider_list[2] = ui.slider(
-                        min=20, max=100
-                    ).props('label-always')
-                    self.slider_list[2].bind_value(self.fan_control_service.fan_walls[3], 'current_speed')
-                    self.slider_list[2].set_enabled(wall_3.manual if wall_3 else True)  # Enabled based on manual state
-
-                # Profile selection for Fan Wall 3 - hide when manual mode is enabled
-                profile_container_3 = ui.element('div').classes('px-5 pb-2 w-full')
-                with profile_container_3:
-                    profile_select_3 = ui.select(
-                        options=profile_options,
-                        label='Fan Profile',
-                        value=wall_3.assigned_profile if wall_3 and wall_3.assigned_profile in profile_options else profile_options[0]
-                    ).classes('w-full')
-                    profile_select_3.set_enabled(not (wall_3.manual if wall_3 else True))  # Enabled based on manual state
-
-                # Hide/show profile container based on manual state
-                if wall_3 and wall_3.manual:
-                    profile_container_3.set_visibility(False)
-
-                # Display selected temperature sensors and values for Fan Wall 3
-                if wall_3 and wall_3.assigned_profile and wall_3.assigned_profile != 'None' and not wall_3.manual:
-                    self.display_profile_sensors(wall_3.assigned_profile, 'px-5 pb-2 w-full')
-
-                # Connect checkbox to slider/profile for Fan Wall 3
-                def toggle_fan_wall_3(e):
-                    self.slider_list[2].set_enabled(e.value)
-                    profile_select_3.set_enabled(not e.value)
-                    profile_container_3.set_visibility(not e.value)  # Hide when manual, show when profile mode
-
-                    # Update fan wall service
-                    self.fan_control_service.set_manual_mode(3, e.value)
-
-                    # When manual is unchecked, assign the first available fan profile
-                    if not e.value and profile_options:
-                        first_profile = profile_options[0]
-                        profile_select_3.set_value(first_profile)
-                        self.fan_control_service.assign_profile_to_wall(3, first_profile)
-
-                    # Refresh drawer to update sensor displays
-                    self.setup_fan_drawer()
-
-                manual_checkbox_3.on_value_change(toggle_fan_wall_3)
-
-                # Handle profile selection for Fan Wall 3
-                def on_profile_select_3(e):
-                    if not manual_checkbox_3.value:
-                        self.fan_control_service.assign_profile_to_wall(3, e.value)
-                        # Refresh drawer to update sensor displays
-                        self.setup_fan_drawer()
-
-                profile_select_3.on_value_change(on_profile_select_3)
-
-                ui.separator()
-
-
-            if 2 in globals.powerboardDict:  # Display auxiliary fan control
-                pb: Powerboard = globals.powerboardDict[2]
-                # Get current saved auxiliary fan speed from powerboard 2
-                aux_pwm_tuple = pb.get_saved_fan_pwm()
-                aux_pwm = aux_pwm_tuple[2]  # Use row 3 as the auxiliary speed
-
-                # Get auxiliary fan wall state
-                wall_aux = self.fan_control_service.fan_walls.get(4)
-
-                # Auxiliary Fans
-                with ui.row().classes('w-full items-center justify-between px-5 mb-2'):
-                    ui.label('Auxiliary Fans').tooltip('Fan headers on the second powerboard.')
-                    manual_checkbox_aux = ui.checkbox('Manual', value=wall_aux.manual if wall_aux else True).classes('text-sm')
-
-                with ui.element('div').classes('px-5 pt-1 w-full'):
-                    self.slider_list[3] = ui.slider(
-                        min=20, max=100
-                    ).props('label-always')
-                    self.slider_list[3].bind_value(self.fan_control_service.fan_walls[4], 'current_speed')
-                    self.slider_list[3].set_enabled(wall_aux.manual if wall_aux else True)  # Enabled based on manual state
-
-                # Profile selection for Auxiliary Fans - hide when manual mode is enabled
-                profile_container_aux = ui.element('div').classes('px-5 pb-2 w-full')
-                with profile_container_aux:
-                    profile_select_aux = ui.select(
-                        options=profile_options,
-                        label='Fan Profile',
-                        value=wall_aux.assigned_profile if wall_aux and wall_aux.assigned_profile in profile_options else profile_options[0]
-                    ).classes('w-full')
-                    profile_select_aux.set_enabled(not (wall_aux.manual if wall_aux else True))  # Enabled based on manual state
-
-                # Hide/show profile container based on manual state
-                if wall_aux and wall_aux.manual:
-                    profile_container_aux.set_visibility(False)
-
-                # Display selected temperature sensors and values for Auxiliary Fans
-                if wall_aux and wall_aux.assigned_profile and wall_aux.assigned_profile != 'None' and not wall_aux.manual:
-                    self.display_profile_sensors(wall_aux.assigned_profile, 'px-5 pb-2 w-full')
-
-                # Connect checkbox to slider/profile for Auxiliary Fans
-                def toggle_auxiliary_fans(e):
-                    self.slider_list[3].set_enabled(e.value)
-                    profile_select_aux.set_enabled(not e.value)
-                    profile_container_aux.set_visibility(not e.value)  # Hide when manual, show when profile mode
-
-                    # Update auxiliary fan wall service
-                    self.fan_control_service.set_manual_mode(4, e.value)
-
-                    # When manual is unchecked, assign the first available fan profile
-                    if not e.value and profile_options:
-                        first_profile = profile_options[0]
-                        profile_select_aux.set_value(first_profile)
-                        self.fan_control_service.assign_profile_to_wall(4, first_profile)
-
-                    # Refresh drawer to update sensor displays
-                    self.setup_fan_drawer()
-
-                manual_checkbox_aux.on_value_change(toggle_auxiliary_fans)
-
-                # Handle profile selection for Auxiliary Fans
-                def on_profile_select_aux(e):
-                    if not manual_checkbox_aux.value:
-                        self.fan_control_service.assign_profile_to_wall(4, e.value)
-                        # Refresh drawer to update sensor displays
-                        self.setup_fan_drawer()
-
-                profile_select_aux.on_value_change(on_profile_select_aux)
+                manual_checkbox.on_value_change(make_toggle(wall_id, slider_idx, profile_select, profile_container))
+                profile_select.on_value_change(make_profile_select(wall_id, manual_checkbox))
 
                 ui.separator()
 
@@ -963,6 +864,26 @@ class SystemOverview:
                     )
                 ).classes('w-full')
 
+    def _attach_drive_button_controls(self, button):
+        """Add hover remove button and right-click context menu to a drive button."""
+        button.classes(add='relative')
+        has_drive = button.assigned_drive is not None
+        with button:
+            button.remove_btn = ui.button(
+                icon='close',
+                on_click=lambda b=button: b.clear_drive()
+            ).props('flat round dense size=xs color=grey-5').classes(
+                'absolute top-0 right-0 z-10 opacity-30 hover:opacity-100'
+            ).tooltip('Remove drive')
+            button.remove_btn.set_visibility(has_drive)
+
+            with ui.context_menu():
+                button.remove_menu_item = ui.menu_item(
+                    'Remove Disk',
+                    on_click=lambda b=button: b.clear_drive()
+                )
+                button.remove_menu_item.set_visibility(has_drive)
+
     def setup_backplane_buttons(self, card, backplane: Backplane, index):
         """Set up buttons for different backplane types (flip parent container in inverted mode)."""
         card.clear()
@@ -978,6 +899,8 @@ class SystemOverview:
             chassis = globals.layoutState.get_product()
             if chassis == "Hako-Core":
                 return i in {0, 1, 2, 3, 4, 6, 7, 9, 10}
+            if chassis == "Hako-Core DAS":
+                return i in {0, 1, 2, 4, 5, 6, 8, 9, 10}
             if chassis == "Hako-Core Mini":
                 return i in {0, 1, 2, 3, 4, 5}
             return False
@@ -1025,6 +948,7 @@ class SystemOverview:
                             button.classes('drive-button')
                             button.on_click_handler = self.select_drive
                             button.on('click', lambda b=button: self.select_drive(b))
+                            self._attach_drive_button_controls(button)
                             card.buttons.append(button.classes('truncate'))
                     ui.element('div').classes(f'extension-patch patch-top-arm-bottom{cage}')
                     ui.element('div').classes(f'extension-patch patch-mid-arm-top{cage}')
@@ -1040,6 +964,7 @@ class SystemOverview:
                             button.classes('drive-button')
                             button.on_click_handler = self.select_drive
                             button.on('click', lambda b=button: self.select_drive(b))
+                            self._attach_drive_button_controls(button)
                             card.buttons.append(button.classes('truncate'))
                     with ui.element('col2').classes('col-span-1 h-full'):
                         for i in range(6, 12):
@@ -1047,6 +972,7 @@ class SystemOverview:
                             button.classes('drive-button')
                             button.on_click_handler = self.select_drive
                             button.on('click', lambda b=button: self.select_drive(b))
+                            self._attach_drive_button_controls(button)
                             card.buttons.append(button.classes('truncate'))
                     ui.element('div').classes(f'extension-patch patch-top-arm-bottom{cage}')
                     ui.element('div').classes(f'extension-patch patch-mid-arm-top{cage}')
@@ -1067,6 +993,7 @@ class SystemOverview:
                                 button.props('no-wrap')
                             else:
                                 button.style('height: 28%;')
+                            self._attach_drive_button_controls(button)
                             card.buttons.append(button)
                     ui.element('div').classes(f'extension-patch patch-top-arm-bottom{cage}')
                     ui.element('div').classes(f'extension-patch patch-mid-arm-top{cage}')
@@ -1155,6 +1082,8 @@ class SystemOverview:
                 card_width = '50dvw'
             elif chassis_type == "HF-L1":
                 card_width = '35dvw'
+            elif chassis_type == "Hako-Core DAS":
+                card_width = '90dvw'
             else:
                 card_width = '70dvw'
             # Set grid template rows based on orientation (all chassis share the same 5-row structure)
@@ -1163,17 +1092,32 @@ class SystemOverview:
                 f'height: 98.9dvh; width: {card_width}; min-width: 800px; min-height: 800px; '
                 f'display: grid; grid-template-areas: {grid_template_areas}; '
                 f'grid-template-rows: {grid_rows}; '
-                f'grid-template-columns: repeat(24, 1fr);'
+                f'grid-template-columns: repeat({"23" if chassis_type == "Hako-Core DAS" else "24"}, 1fr);'
             ) as grid_container:
 
-                # RPM, wattage, fans (unchanged)
-                for i, position in enumerate(layout_config["rpm_positions"]):
-                    RPMCard(i, position)
+                def wall_assigned(wall_id: int) -> bool:
+                    if not globals.fan_control_service:
+                        return False
+                    wall = globals.fan_control_service.fan_walls.get(wall_id)
+                    return wall is not None and wall.powerboard_id is not None
+
+                def wall_assigned(wall_id: int) -> bool:
+                    if not globals.fan_control_service:
+                        return False
+                    wall = globals.fan_control_service.fan_walls.get(wall_id)
+                    return wall is not None and wall.powerboard_id is not None
+
+                # Wattage always renders — physical powerboard sections are always present
                 for i, position in enumerate(layout_config["watt_positions"]):
                     self.wattage_card_list.append(WattageCard(i, position))
+                # RPM and fan buttons only render if the wall has a powerboard assigned
+                for i, position in enumerate(layout_config["rpm_positions"]):
+                    if wall_assigned(i + 1):
+                        RPMCard(i, position)
                 for i, position in enumerate(layout_config["fan_positions"]):
-                    fan_row = FanRowButtons(self.select_fans, position)
-                    self.fan_buttons_list.extend(fan_row.row_Of_Buttons)
+                    if wall_assigned(i + 1):
+                        fan_row = FanRowButtons(self.select_fans, position)
+                        self.fan_buttons_list.extend(fan_row.row_Of_Buttons)
 
                 # Backplanes
                 if not globals.layoutState.is_empty():
@@ -1223,8 +1167,11 @@ class SystemOverview:
             with ui.row().classes('w-full justify-center gap-4'):
                 def select_hako_core():
                     chassis_dialog.close()
-                    # Force UI update after closing dialog
                     self.create_chassis_layout(main_content, "Hako-Core")
+
+                def select_hako_core_das():
+                    chassis_dialog.close()
+                    self.create_chassis_layout(main_content, "Hako-Core DAS")
 
                 def select_hako_core_mini():
                     chassis_dialog.close()
@@ -1237,6 +1184,11 @@ class SystemOverview:
                 ui.button(
                     'Hako-Core',
                     on_click=select_hako_core
+                ).classes('border-solid border-2 border-[#ffdd00] px-8 py-4').props('flat color="white"')
+
+                ui.button(
+                    'Hako-Core DAS',
+                    on_click=select_hako_core_das
                 ).classes('border-solid border-2 border-[#ffdd00] px-8 py-4').props('flat color="white"')
 
                 ui.button(
@@ -1263,8 +1215,22 @@ class SystemOverview:
                     if current_chassis is None:
                         # Show chassis selection dialog
                         self.show_chassis_selection_dialog(main_content)
-                    elif current_chassis in ["Hako-Core", "Hako-Core Mini", "HF-L1"]:
+                    elif current_chassis in ["Hako-Core", "Hako-Core DAS", "Hako-Core Mini", "HF-L1"]:
                         self.create_chassis_layout(main_content, current_chassis)
+
+            # Auxiliary / unassigned fan zones bar — below chassis grid, in normal page flow
+            if globals.fan_control_service:
+                aux_wall_ids = [
+                    wid for wid in [4, 5, 6]
+                    if wid in globals.fan_control_service.fan_walls
+                    and globals.fan_control_service.fan_walls[wid].powerboard_id is not None
+                ]
+                if aux_wall_ids:
+                    with ui.row().classes('gap-2 p-2 justify-center w-full'):
+                        for wid in aux_wall_ids:
+                            card = AuxFanCard(wid)
+                            self.fan_buttons_list.append(card)
+                            card.on('click', lambda c=card: self.select_fans(c))
 
             # Create drawers and dialogs
             self.right_drawer = ui.right_drawer(value=False, fixed=True).style().props(

@@ -5,7 +5,7 @@ import page_layout
 
 @require_auth
 def settingsPage():
-    """Settings page for chassis layout and powerboard information."""
+    """Settings page for chassis layout and fan configuration."""
 
     # Use a mutable object to store the flag so it can be accessed in nested functions
     state_flags = {'ignoring_change': False}
@@ -22,6 +22,7 @@ def settingsPage():
         """Change the chassis product and reset layout."""
         globals.layoutState.reset_chassis()
         globals.layoutState.set_product(new_product)
+        wattage_source_ui.refresh()
 
     def change_model_display(value):
         # If turning off model display, ensure SN display is on
@@ -31,28 +32,6 @@ def settingsPage():
             if ui_refs['sn_switch']:
                 ui_refs['sn_switch'].set_value(True)
         globals.layoutState.set_model_display(value)
-
-    def swap_powerboard_positions():
-        """Swap the positions of powerboard 1 and 2 in powerboardDict."""
-        pb1 = globals.powerboardDict.get(1)
-        pb2 = globals.powerboardDict.get(2)
-
-        if pb1 and pb2:
-            # Swap the Powerboard objects in the dictionary
-            globals.powerboardDict[1], globals.powerboardDict[2] = globals.powerboardDict[2], globals.powerboardDict[1]
-
-            ui.notify("Powerboard positions swapped!",
-                     position='bottom-right', type='positive', group=False)
-            # Refresh the powerboard information table
-            powerboard_container.clear()
-            with powerboard_container:
-                create_powerboard_table()
-        elif pb1 or pb2:
-            ui.notify("Only one powerboard detected, cannot swap.",
-                     position='bottom-right', type='warning', group=False)
-        else:
-            ui.notify("No powerboards detected, cannot swap.",
-                     position='bottom-right', type='warning', group=False)
 
     def change_sn_display(value):
         # If turning off SN display, ensure model display is on
@@ -91,56 +70,6 @@ def settingsPage():
                 ui.button('Yes', on_click=lambda: (change_product(new_product), dialog.close())).classes('border-solid border-2 border-[#ffdd00]').props('flat color="white"')
                 ui.button('No', on_click=on_no).classes('border-solid border-2 border-[#ffdd00]').props('flat color="white"')
         dialog.open()
-
-    def get_powerboard_info():
-        """Get powerboard information for table display."""
-        powerboard_data = []
-
-        for position in [1, 2]:
-            if position in globals.powerboardDict:
-                pb = globals.powerboardDict[position]
-                try:
-                    # Get connection port info
-                    port = getattr(pb, '_serial_instance', None)
-                    port_name = port.port if port and hasattr(port, 'port') else 'Unknown'
-
-                    powerboard_data.append({
-                        'port': port_name,
-                        'hardware_rev': pb.hardware_revision if hasattr(pb, 'hardware_revision') else 'Unknown',
-                        'firmware_ver': pb.firmware_version if hasattr(pb, 'firmware_version') else 'Unknown',
-                        'location': pb.location if hasattr(pb, 'location') else 'Unknown'
-                    })
-                except Exception as e:
-                    # Fallback for any errors accessing powerboard properties
-                    powerboard_data.append({
-                        'port': 'Error',
-                        'hardware_rev': 'Error',
-                        'firmware_ver': 'Error',
-                        'location': 'Error'
-                    })
-
-        return powerboard_data
-
-    def create_powerboard_table():
-        """Create and return powerboard information table."""
-        powerboard_data = get_powerboard_info()
-
-        if not powerboard_data:
-            return ui.label('No powerboards detected.').classes('text-gray-500 italic')
-
-        # Define table columns
-        columns = [
-            {'name': 'port', 'label': 'Serial Port', 'field': 'port', 'required': True, 'align': 'left'},
-            {'name': 'hardware_rev', 'label': 'Hardware Rev', 'field': 'hardware_rev', 'required': True, 'align': 'center'},
-            {'name': 'firmware_ver', 'label': 'Firmware Ver', 'field': 'firmware_ver', 'required': True, 'align': 'center'},
-            {'name': 'location', 'label': 'Location', 'field': 'location', 'required': True, 'align': 'center'}
-        ]
-
-        return ui.table(
-            columns=columns,
-            rows=powerboard_data,
-            row_key='location'
-        ).classes('w-full')
 
     def get_pwm_values():
         """Get current saved PWM values from powerboards."""
@@ -250,6 +179,108 @@ def settingsPage():
                     on_click=apply_pwm_settings
                 ).classes('border-solid border-2 border-[#ffdd00] text-white px-6 py-2').props('flat')
 
+    def create_fan_wall_assignments():
+        """Create fan wall assignment UI."""
+        if not globals.fan_control_service or not globals.fan_control_service.fan_walls:
+            return ui.label('No fan walls initialized.').classes('text-gray-500 italic')
+
+        svc = globals.fan_control_service
+        pb_options = {pb.location: f'Powerboard {pb.location}' for pb in sorted(globals.powerboardDict.values(), key=lambda p: p.location)}
+        header_options = {0: 'Row 1', 1: 'Row 2', 2: 'Row 3'}
+
+        with ui.grid(columns=3).classes('w-full gap-x-4 gap-y-2'):
+            # Column headers
+            ui.label('Fan Wall').classes('text-xs text-gray-400 uppercase tracking-wide font-semibold')
+            ui.label('Powerboard').classes('text-xs text-gray-400 uppercase tracking-wide font-semibold')
+            ui.label('Header').classes('text-xs text-gray-400 uppercase tracking-wide font-semibold')
+
+            for wall_id in sorted(svc.fan_walls.keys()):
+                wall = svc.fan_walls[wall_id]
+
+                ui.label(wall.name).classes('text-sm self-center')
+
+                pb_select = ui.select(
+                    options={None: 'Unassigned', **pb_options},
+                    value=wall.powerboard_id,
+                ).classes('w-full')
+
+                header_select = ui.select(
+                    options={None: 'Unassigned', **header_options},
+                    value=wall.header_index,
+                ).classes('w-full')
+
+                def on_change(_, wid=wall_id, pb_sel=pb_select, hdr_sel=header_select):
+                    success = svc.set_wall_assignment(wid, pb_sel.value, hdr_sel.value)
+                    if not success:
+                        # Revert selects to current (unchanged) values
+                        w = svc.fan_walls[wid]
+                        pb_sel.set_value(w.powerboard_id)
+                        hdr_sel.set_value(w.header_index)
+                        ui.notify(
+                            'That powerboard/header is already assigned to another fan wall.',
+                            position='bottom-right', type='warning', group=False
+                        )
+                    else:
+                        ui.notify(
+                            f'{svc.fan_walls[wid].name} assignment saved.',
+                            position='bottom-right', type='positive', group=False
+                        )
+
+                pb_select.on_value_change(on_change)
+                header_select.on_value_change(on_change)
+
+    @ui.refreshable
+    def wattage_source_ui():
+        create_wattage_source_assignments()
+
+    def create_wattage_source_assignments():
+        """Configure independent wattage source (pdb + connector) per wall display row."""
+        if not globals.fan_control_service or not globals.fan_control_service.fan_walls:
+            return ui.label('No fan walls initialized.').classes('text-gray-500 italic')
+
+        svc = globals.fan_control_service
+        pb_options = {pb.location: f'Powerboard {pb.location}' for pb in sorted(globals.powerboardDict.values(), key=lambda p: p.location)}
+        connector_options = {
+            'watt_sec_1_2': 'Section 1-2',
+            'watt_sec_3_4': 'Section 3-4',
+        }
+
+        _chassis_watt_rows = {'Hako-Core': 3, 'Hako-Core DAS': 4, 'Hako-Core Mini': 2, 'HF-L1': 1}
+        chassis = globals.layoutState.get_product()
+        watt_wall_ids = list(range(1, _chassis_watt_rows.get(chassis, 3) + 1))
+
+        with ui.grid(columns=3).classes('w-full gap-x-4 gap-y-2'):
+            ui.label('Row').classes('text-xs text-gray-400 uppercase tracking-wide font-semibold')
+            ui.label('Powerboard').classes('text-xs text-gray-400 uppercase tracking-wide font-semibold')
+            ui.label('Connector').classes('text-xs text-gray-400 uppercase tracking-wide font-semibold')
+
+            for wall_id in watt_wall_ids:
+                wall = svc.fan_walls.get(wall_id)
+                if not wall:
+                    continue
+
+                ui.label(f'Drive Row {wall_id}').classes('text-sm self-center')
+
+                pb_sel = ui.select(
+                    options={None: 'Auto', **pb_options},
+                    value=wall.watt_powerboard_id,
+                ).classes('w-full')
+
+                conn_sel = ui.select(
+                    options={None: 'Auto', **connector_options},
+                    value=wall.watt_attr,
+                ).classes('w-full')
+
+                def on_watt_change(_, wid=wall_id, pb_s=pb_sel, conn_s=conn_sel):
+                    svc.set_wall_wattage_source(wid, pb_s.value, conn_s.value)
+                    ui.notify(
+                        f'{svc.fan_walls[wid].name} wattage source saved.',
+                        position='bottom-right', type='positive', group=False
+                    )
+
+                pb_sel.on_value_change(on_watt_change)
+                conn_sel.on_value_change(on_watt_change)
+
     # Main settings UI
     with page_layout.frame('Settings'):
         with ui.element('div').classes('flex w-full').style('justify-content: safe center;'):
@@ -259,7 +290,7 @@ def settingsPage():
                 with ui.grid(columns=2).classes('gap-0 w-full').style('grid-auto-rows: 1fr;'):
                     ui.label('Chassis Layout:').classes('flex justify-start items-center')
                     product_select = ui.select(
-                        ['Hako-Core', 'Hako-Core Mini', 'HF-L1'],
+                        ['Hako-Core', 'Hako-Core DAS', 'Hako-Core Mini', 'HF-L1'],
                         value=globals.layoutState.get_product(),
                         on_change=handle_product_change
                     )
@@ -283,7 +314,7 @@ def settingsPage():
                     current_unit = globals.layoutState.get_units()
                     # Find the display name for the current value
                     current_display = next((k for k, v in unit_options.items() if v == current_unit), 'Celsius (C°)')
-                    
+
                     ui.select(
                         list(unit_options.keys()),
                         value=current_display,
@@ -322,23 +353,27 @@ def settingsPage():
 
                 ui.separator().classes('mb-6')
 
-                # Powerboard Information Section
-                with ui.column().classes('w-full') as powerboard_container:
-                    ui.label('Powerboard Information').classes('text-xl font-bold mb-4')
-                    create_powerboard_table()
-                if 2 in globals.powerboardDict:
-                    with ui.row().classes('w-full justify-center'):
-                        ui.label('Swap powerboard positions:').classes('flex justify-start items-center ')
-                        ui_refs['pb_swap_switch'] = ui.switch(value=globals.layoutState.get_pb_swap(), on_change=lambda e: (globals.layoutState.set_pb_swap(e.value), swap_powerboard_positions())).style('justify-content:end;')
-
-
-                ui.separator().classes('mb-6')
-
                 # PWM Settings Section
                 with ui.column().classes('w-full') as pwm_container:
                     ui.label('Default Fan Speed').classes('text-xl font-bold mb-4')
                     ui.label('These will be used when the system starts and persist between power cycles.').classes('text-sm text-gray-500 mb-2')
                     create_pwm_settings()
+
+                ui.separator().classes('mb-6')
+
+                # Fan Wall Assignments Section
+                with ui.column().classes('w-full'):
+                    ui.label('Fan Wall Assignments').classes('text-xl font-bold mb-2')
+                    ui.label('Assign each fan wall to a powerboard and header row. Each combination can only be used once.').classes('text-sm text-gray-500 mb-4')
+                    create_fan_wall_assignments()
+
+                ui.separator().classes('mb-6')
+
+                # Wattage Source Assignments Section
+                with ui.column().classes('w-full'):
+                    ui.label('Wattage Source Assignments').classes('text-xl font-bold mb-2')
+                    ui.label('Override which powerboard connector supplies power readings for each display row. Defaults to the fan wall assignment if not set.').classes('text-sm text-gray-500 mb-4')
+                    wattage_source_ui()
 
                 # Additional spacing
                 ui.space().classes('h-2')

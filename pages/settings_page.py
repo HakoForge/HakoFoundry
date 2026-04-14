@@ -1,4 +1,4 @@
-from nicegui import ui
+from nicegui import ui, run
 from authentication import require_auth
 import globals
 import page_layout
@@ -71,57 +71,41 @@ def settingsPage():
                 ui.button('No', on_click=on_no).classes('border-solid border-2 border-[#ffdd00]').props('flat color="white"')
         dialog.open()
 
-    def get_pwm_values():
-        """Get current saved PWM values from powerboards."""
-        pwm_data = {}
-
-        # Get powerboard 1 PWM values
-        if 1 in globals.powerboardDict:
-            pb1_pwm = globals.powerboardDict[1].get_saved_fan_pwm()
-            pwm_data['pb1'] = {
-                'row1': pb1_pwm[0],
-                'row2': pb1_pwm[1],
-                'row3': pb1_pwm[2]
-            }
-
-        # Get powerboard 2 PWM values
-        if 2 in globals.powerboardDict:
-            pb2_pwm = globals.powerboardDict[2].get_saved_fan_pwm()
-            pwm_data['pb2'] = {
-                'aux': pb2_pwm[2]  # Use third value for auxiliary
-            }
-
-        return pwm_data
-
     def create_pwm_settings():
-        """Create PWM settings interface."""
-        pwm_data = get_pwm_values()
+        """Create PWM settings interface. Shows all 3 headers per connected powerboard;
+        headers without a fan wall assignment are displayed but disabled."""
+        if not globals.powerboardDict:
+            ui.label('No powerboards detected for PWM settings.').classes('text-gray-500 italic')
+            return
 
-        if not pwm_data:
-            return ui.label('No powerboards detected for PWM settings.').classes('text-gray-500 italic')
+        svc = globals.fan_control_service
 
-        # Store PWM input references
-        pwm_inputs = {}
+        # Build lookup: (pb_location, header_index) -> FanWall
+        wall_by_assignment: dict = {}
+        if svc and svc.fan_walls:
+            for wall in svc.fan_walls.values():
+                if wall.powerboard_id is not None and wall.header_index is not None:
+                    wall_by_assignment[(wall.powerboard_id, wall.header_index)] = wall
+
+        header_labels = {0: 'Row 1', 1: 'Row 2', 2: 'Row 3'}
+        # (pb_location, header_index) -> slider; keyed this way so apply can rebuild per-PB arrays
+        pwm_inputs: dict = {}
+        pb_objects: dict = {}  # pb_location -> pb_obj, for use in apply
 
         async def apply_pwm_settings():
-            """Apply the PWM settings using fan control service."""
+            """Write all slider values to each powerboard's EEPROM."""
             try:
-                # Get values from inputs
-                pb1_values = [0, 0, 0]
-                pb2_aux = 100
+                pb_speeds: dict = {}
+                for (pb_location, header_index), slider in pwm_inputs.items():
+                    pb_obj = pb_objects.get(pb_location)
+                    if pb_obj is None:
+                        continue
+                    if pb_location not in pb_speeds:
+                        pb_speeds[pb_location] = {'pb': pb_obj, 'speeds': list(pb_obj.get_saved_fan_pwm())}
+                    pb_speeds[pb_location]['speeds'][header_index] = int(slider.value)
 
-                if 'pb1' in pwm_data:
-                    pb1_values[0] = int(pwm_inputs['pb1_row1'].value)
-                    pb1_values[1] = int(pwm_inputs['pb1_row2'].value)
-                    pb1_values[2] = int(pwm_inputs['pb1_row3'].value)
-
-                if 'pb2' in pwm_data:
-                    pb2_aux = int(pwm_inputs['pb2_aux'].value)
-
-                # Use fan control service to set the speeds
-                await globals.fan_control_service.set_fan_speed(
-                    pb1_values[0], pb1_values[1], pb1_values[2], pb2_aux
-                )
+                for entry in pb_speeds.values():
+                    await run.io_bound(entry['pb'].set_fan_speed, *entry['speeds'])
 
                 ui.notify("PWM settings applied successfully!",
                          position='bottom-right', type='positive', group=False)
@@ -131,46 +115,37 @@ def settingsPage():
                          position='bottom-right', type='negative', group=False)
 
         with ui.column().classes('w-full gap-4'):
-            # Powerboard 1 settings
-            if 'pb1' in pwm_data:
+            for pb_id in sorted(globals.powerboardDict.keys()):
+                pb_obj = globals.powerboardDict[pb_id]
+                saved = pb_obj.get_saved_fan_pwm()
+                pb_objects[pb_obj.location] = pb_obj
+
                 with ui.card().classes('w-full'):
-                    ui.label('Powerboard 1 - Fan Rows').classes('text-lg font-semibold mb-2')
+                    ui.label(f'Powerboard {pb_obj.location}').classes('text-lg font-semibold mb-2')
                     with ui.grid(columns=3).classes('gap-4 w-full'):
-                        with ui.column().classes('items-center gap-2'):
-                            ui.label('Row 1 PWM')
-                            pwm_inputs['pb1_row1'] = ui.slider(
-                                min=0, max=100, step=1,
-                                value=int(pwm_data['pb1']['row1'])
-                            ).classes('w-32')
-                            ui.label().bind_text_from(pwm_inputs['pb1_row1'], 'value', lambda v: f'{int(v)}%')
+                        for header_index in range(3):
+                            wall = wall_by_assignment.get((pb_obj.location, header_index))
+                            assigned = wall is not None
 
-                        with ui.column().classes('items-center gap-2'):
-                            ui.label('Row 2 PWM')
-                            pwm_inputs['pb1_row2'] = ui.slider(
-                                min=0, max=100, step=1,
-                                value=int(pwm_data['pb1']['row2'])
-                            ).classes('w-32')
-                            ui.label().bind_text_from(pwm_inputs['pb1_row2'], 'value', lambda v: f'{int(v)}%')
+                            with ui.column().classes('items-center gap-2'):
+                                if assigned:
+                                    ui.label(wall.name)
+                                else:
+                                    ui.label(f'{header_labels[header_index]} - unassigned').classes('text-gray-500 italic text-sm')
 
-                        with ui.column().classes('items-center gap-2'):
-                            ui.label('Row 3 PWM')
-                            pwm_inputs['pb1_row3'] = ui.slider(
-                                min=0, max=100, step=1,
-                                value=int(pwm_data['pb1']['row3'])
-                            ).classes('w-32')
-                            ui.label().bind_text_from(pwm_inputs['pb1_row3'], 'value', lambda v: f'{int(v)}%')
+                                slider = ui.slider(
+                                    min=0, max=100, step=1,
+                                    value=int(saved[header_index])
+                                ).classes('w-32')
+                                if not assigned:
+                                    slider.props('disable')
+                                    slider.tooltip('No fan wall assigned to this header')
 
-            # Powerboard 2 settings (show only if exists)
-            if 'pb2' in pwm_data:
-                with ui.card().classes('w-full'):
-                    ui.label('Powerboard 2 - Auxiliary Fans').classes('text-lg font-semibold mb-2')
-                    with ui.column().classes('items-center gap-2 w-full'):
-                        ui.label('Auxiliary PWM')
-                        pwm_inputs['pb2_aux'] = ui.slider(
-                            min=0, max=100, step=1,
-                            value=int(pwm_data['pb2']['aux'])
-                        ).classes('w-64')
-                        ui.label().bind_text_from(pwm_inputs['pb2_aux'], 'value', lambda v: f'{int(v)}%')
+                                ui.label().bind_text_from(
+                                    slider, 'value', lambda v: f'{int(v)}%'
+                                ).classes('' if assigned else 'text-gray-500')
+
+                                pwm_inputs[(pb_obj.location, header_index)] = slider
 
             # Apply button
             with ui.row().classes('justify-center w-full mt-4'):
@@ -354,7 +329,7 @@ def settingsPage():
                 ui.separator().classes('mb-6')
 
                 # PWM Settings Section
-                with ui.column().classes('w-full') as pwm_container:
+                with ui.column().classes('w-full'):
                     ui.label('Default Fan Speed').classes('text-xl font-bold mb-4')
                     ui.label('These will be used when the system starts and persist between power cycles.').classes('text-sm text-gray-500 mb-2')
                     create_pwm_settings()

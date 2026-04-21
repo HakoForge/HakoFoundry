@@ -167,7 +167,7 @@ async def powerboardsPage():
                     # ── Control mode (jumper) ─────────────────────────────────
                     try:
                         jumper = await run.io_bound(pb.get_jumper_state)
-                        mode = 'Motherboard' if jumper == 1 else 'Powerboard'
+                        mode = 'Motherboard' if jumper == 0 else 'Powerboard'
                         mode_color = 'text-yellow-400' if jumper == 1 else 'text-green-400'
                     except Exception:
                         mode = 'Unknown'

@@ -133,15 +133,13 @@ class Powerboard:
         if self._hardware_rev == '2.0':
             self.ADC_SLOPE = 3.574
             self.ADC_INTERCEPT = -1.375
-        elif self._hardware_rev.startswith('2.1'):
-            self.ADC_SLOPE = 3.284
-            self.ADC_INTERCEPT = -1.069 
-        elif self._hardware_rev.startswith('2.2'):
+        elif self._hardware_rev.startswith('2.1') or self._hardware_rev.startswith('2.2'):
             self.ADC_SLOPE = 3.284
             self.ADC_INTERCEPT = -1.069 
         else:
-            self.ADC_SLOPE = 3.284
-            self.ADC_INTERCEPT = -1.069 
+            self.ADC_SLOPE = 925.25
+            self.ADC_INTERCEPT = 0
+
         
         # Initialize other state variables
         self._current_fan_rpm: Optional[Tuple[int, int, int]] = None
@@ -410,7 +408,7 @@ class Powerboard:
                 # Calculation for other hardware revisions
                 wattages = []
                 for reading in analog_readings:
-                    if reading == 0:
+                    if reading <= 0:
                         current = 0
                     else:
                         # Slope formula that compensates for low and high values

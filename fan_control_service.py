@@ -31,13 +31,19 @@ except ImportError:
 class FanWall:
     """Represents a single fan wall that can be controlled by a fan profile."""
     
-    def __init__(self, wall_id: int, name: str = None, assigned_profile: Optional[str] = None):
+    def __init__(self, wall_id: int, name: str = None, assigned_profile: Optional[str] = None,
+             powerboard_id: Optional[int] = None, header_index: Optional[int] = None):
         self.wall_id = wall_id
-        self.name = name        
+        self.name = name
         self.assigned_profile = assigned_profile # Profile name
         self.current_speed = 0  # Current fan speed percentage (0-100)
         self.manual: bool = True  # True for manual control, False for profile control
         self._service_ref = None  # Reference to the service for triggering saves
+        self.powerboard_id: Optional[int] = powerboard_id    # which powerboard (1, 2, ...)
+        self.header_index: Optional[int] = header_index      # 0=Row1, 1=Row2, 2=Row3
+        self.watt_label: Optional[str] = None                # Custom wattage label; None = auto-derive
+        self.watt_powerboard_id: Optional[int] = None        # Powerboard for wattage reading (independent of fan control)
+        self.watt_attr: Optional[str] = None                 # 'watt_sec_1_2' (J1) or 'watt_sec_3_4' (J2)
     
     def set_service_reference(self, service):
         """Set reference to the fan control service for triggering config saves."""
@@ -123,6 +129,11 @@ class FanControlService:
                 wall = self.fan_walls[wall_id]
                 wall.assigned_profile = wall_config.get('assigned_profile', wall.assigned_profile)
                 wall.manual = wall_config.get('manual', True)
+                wall.powerboard_id = wall_config.get('powerboard_id', wall.powerboard_id)
+                wall.header_index = wall_config.get('header_index', wall.header_index)
+                wall.watt_label = wall_config.get('watt_label', None)
+                wall.watt_powerboard_id = wall_config.get('watt_powerboard_id', None)
+                wall.watt_attr = wall_config.get('watt_attr', None)
                 # Don't override current_speed from powerboard readings
                 logger.info(f"Applied config to {wall.name}: Profile={wall.assigned_profile}, Manual={wall.manual}")
         
@@ -153,7 +164,12 @@ class FanControlService:
                     'name': wall.name,
                     'assigned_profile': wall.assigned_profile,
                     'manual': wall.manual,
-                    'current_speed': wall.current_speed
+                    'current_speed': wall.current_speed,
+                    'powerboard_id': wall.powerboard_id,
+                    'header_index': wall.header_index,
+                    'watt_label': wall.watt_label,
+                    'watt_powerboard_id': wall.watt_powerboard_id,
+                    'watt_attr': wall.watt_attr,
                 }
             
             logger.debug(f"Config data prepared: {len(config['fan_walls'])} fan walls")
@@ -205,35 +221,38 @@ class FanControlService:
         return True
         
     def fan_speed_current(self, pb) -> bool:
-        """Check if the fan wall service and up to date."""
+        """Check if hardware fan speeds match current wall speeds for a given powerboard."""
         import globals
-        # Check first powerboard
-        if pb == 1:
-            current_fan_speeds = (self.fan_walls[1].current_speed, \
-                                self.fan_walls[2].current_speed, \
-                                self.fan_walls[3].current_speed)
-            if current_fan_speeds != globals.powerboardDict[1].get_running_fan_pwm():
-                return False
-        # Check second powerboard
-        if pb == 2:
-            current_aux_speed = self.fan_walls[4].current_speed
-            if current_aux_speed != globals.powerboardDict[2].get_running_fan_pwm()[2]:
-                return False
-
+        if pb not in globals.powerboardDict:
+            return True
+        pb_obj = globals.powerboardDict[pb]
+        running = pb_obj.get_running_fan_pwm()
+        for wall in self.fan_walls.values():
+            if wall.powerboard_id == pb_obj.location and wall.header_index is not None:
+                if wall.current_speed != running[wall.header_index]:
+                    return False
         return True
     def update_powerboard_fan_speed(self, pb) -> None:
-        """Update the fan speed on the powerboard."""
-
+        """Update hardware fan speed for a given powerboard using current wall assignments."""
         import globals
-        if pb == 1:
-            current_fan_speeds = (self.fan_walls[1].current_speed, \
-                                 self.fan_walls[2].current_speed, \
-                                 self.fan_walls[3].current_speed)
-            globals.powerboardDict[1].update_fan_speed(current_fan_speeds[0], current_fan_speeds[1], current_fan_speeds[2])
+        if pb not in globals.powerboardDict:
+            return
+        pb_obj = globals.powerboardDict[pb]
+        speeds = list(pb_obj.get_running_fan_pwm())
+        for wall in self.fan_walls.values():
+            if wall.powerboard_id == pb_obj.location and wall.header_index is not None:
+                speeds[wall.header_index] = wall.current_speed
+        pb_obj.update_fan_speed(*speeds)
 
-        if pb == 2:
-            current_aux_speed = self.fan_walls[4].current_speed
-            globals.powerboardDict[2].update_fan_speed(current_aux_speed, current_aux_speed, current_aux_speed)
+    def _pb_for_location(self, location: Optional[int]):
+        """Return the Powerboard whose V: location matches, or None."""
+        if location is None:
+            return None
+        import globals
+        for pb in globals.powerboardDict.values():
+            if pb.location == location:
+                return pb
+        return None
 
     def _initialize_fan_walls(self):
         """Initialize fan walls based on powerboard availability."""
@@ -243,25 +262,35 @@ class FanControlService:
         
         # Initialize main fan walls if powerboard 1 is available
         if 1 in globals.powerboardDict:
-            pb1_queued_fan_speed = globals.powerboardDict[1].get_running_fan_pwm()
+            pb1 = globals.powerboardDict[1]
+            pb1_queued_fan_speed = pb1.get_running_fan_pwm()
             for i in range(1, 4):
                 wall_name = f"Fan Wall {i}"
-                # Create wall with default values, config will be applied later if it exists
-                self.fan_walls[i] = FanWall(i, wall_name, default_profile)
-                self.fan_walls[i].set_service_reference(self)  # Set service reference
+                self.fan_walls[i] = FanWall(i, wall_name, default_profile, powerboard_id=pb1.location, header_index=i - 1)
+                self.fan_walls[i].set_service_reference(self)
                 self.fan_walls[i].current_speed = pb1_queued_fan_speed[i - 1]
                 logger.info(f"Initialized {wall_name}")
             app.timer(3.0, self.ping_powerboards)
 
-        # Initialize auxiliary fan wall if powerboard 2 is available
+        # Always initialize Auxiliary Fan 1; assign to powerboard 2 if available
+        self.fan_walls[4] = FanWall(4, "Auxiliary Fan 1", default_profile)
+        self.fan_walls[4].set_service_reference(self)
         if 2 in globals.powerboardDict:
-            pb2_queued_fan_speed = globals.powerboardDict[2].get_running_fan_pwm()
-            self.fan_walls[4] = FanWall(4, "Auxiliary Fan Wall", default_profile)
-            self.fan_walls[4].set_service_reference(self)  # Set service reference
-            self.fan_walls[4].current_speed = pb2_queued_fan_speed[2]  # Use third speed for auxiliary wall
-            
-            logger.info("Initialized Auxiliary Fan Wall")
-        
+            pb2 = globals.powerboardDict[2]
+            pb2_queued_fan_speed = pb2.get_running_fan_pwm()
+            self.fan_walls[4].powerboard_id = pb2.location
+            self.fan_walls[4].header_index = 2
+            self.fan_walls[4].current_speed = pb2_queued_fan_speed[2]
+            logger.info("Initialized Auxiliary Fan 1 (assigned to PB2)")
+        else:
+            logger.info("Initialized Auxiliary Fan 1 (unassigned)")
+
+        # Initialize unassigned auxiliary fans 2 and 3
+        for zone_id, zone_name in [(5, "Auxiliary Fan 2"), (6, "Auxiliary Fan 3")]:
+            self.fan_walls[zone_id] = FanWall(zone_id, zone_name, default_profile)
+            self.fan_walls[zone_id].set_service_reference(self)
+            logger.info(f"Initialized {zone_name} (unassigned)")
+
         # Apply loaded configuration after wall initialization
         self._apply_loaded_config()
     
@@ -306,6 +335,37 @@ class FanControlService:
         
         return True
     
+    def set_wall_assignment(self, wall_id: int, powerboard_id: Optional[int], header_index: Optional[int]) -> bool:
+        """Assign a fan wall to a powerboard (by location) and header. Enforces uniqueness."""
+        if wall_id not in self.fan_walls:
+            return False
+
+        # Uniqueness check: no other wall may share the same (location, header)
+        if powerboard_id is not None and header_index is not None:
+            for wid, wall in self.fan_walls.items():
+                if wid == wall_id:
+                    continue
+                if wall.powerboard_id == powerboard_id and wall.header_index == header_index:
+                    logger.warning(
+                        f"Assignment conflict: Wall {wid} already uses PB location {powerboard_id} Row {header_index + 1}"
+                    )
+                    return False
+
+        self.fan_walls[wall_id].powerboard_id = powerboard_id
+        self.fan_walls[wall_id].header_index = header_index
+        self.save_config_immediate()
+        logger.info(f"Wall {wall_id} assigned to PB location {powerboard_id} Row {header_index + 1 if header_index is not None else '-'}")
+        return True
+
+    def set_wall_wattage_source(self, wall_id: int, powerboard_id: Optional[int], watt_attr: Optional[str]) -> None:
+        """Set the independent wattage source (powerboard + connector) for a wall's display row."""
+        if wall_id not in self.fan_walls:
+            return
+        self.fan_walls[wall_id].watt_powerboard_id = powerboard_id
+        self.fan_walls[wall_id].watt_attr = watt_attr
+        self.save_config_immediate()
+        logger.info(f"Wall {wall_id} wattage source set to PB{powerboard_id}:{watt_attr}")
+
     def set_manual_mode(self, wall_id: int, manual: bool = True) -> bool:
         """Set manual mode for a specific fan wall."""
         if wall_id not in self.fan_walls:
@@ -437,77 +497,44 @@ class FanControlService:
         """Perform automatic fan speed update based on fan profiles."""
         if not self.automatic_control_enabled or not self.fan_wall_service_active:
             return
-        
+
         try:
-            # Calculate new speeds for automatic walls
-            new_speeds = [None, None, None]  # For walls 1, 2, 3
-            any_automatic_walls = False
-            
+            import globals
+            pb_speeds: Dict[int, list] = {}
+            changed_walls = []
+
             for wall_id in [1, 2, 3]:
                 wall = self.fan_walls.get(wall_id)
-                if wall and not wall.manual and wall.assigned_profile:
-                    speed = self._update_single_fan_wall(wall_id)
-                    if speed is not None:
-                        new_speeds[wall_id - 1] = round(speed)
-                        any_automatic_walls = True
-            
-            # If we have automatic walls, update the hardware
-            if any_automatic_walls:
-                await self._request_update_fan_speed_direct(new_speeds)
-                
+                if not wall or wall.manual or not wall.assigned_profile:
+                    continue
+                if wall.powerboard_id is None:
+                    continue
+
+                speed = self._update_single_fan_wall(wall_id)
+                if speed is not None:
+                    loc = wall.powerboard_id
+                    pb_obj = self._pb_for_location(loc)
+                    if pb_obj is None:
+                        continue
+                    if loc not in pb_speeds:
+                        pb_speeds[loc] = {'pb': pb_obj, 'speeds': list(pb_obj.get_running_fan_pwm())}
+                    pb_speeds[loc]['speeds'][wall.header_index] = round(speed)
+                    changed_walls.append(f"Wall {wall_id}")
+
+            for entry in pb_speeds.values():
+                pb_obj = entry['pb']
+                speeds = entry['speeds']
+                pb_obj.set_running_fan_pwm(*speeds)
+                await run.io_bound(pb_obj.update_fan_speed, *speeds)
+
+            if changed_walls:
+                ui.notify(
+                    f"🤖 Auto: {', '.join(changed_walls)} updated",
+                    position='bottom-right', type='info', group=False, timeout=1000
+                )
+
         except Exception as e:
             logger.error(f"Error in automatic fan control update: {e}")
-    
-    async def _request_update_fan_speed_direct(self, speeds: List[Optional[float]]):
-        """Request fan speed update with direct speed values instead of sliders."""
-        # Skip if we're updating sliders programmatically to prevent feedback loops
-        if self.updating_sliders_programmatically:
-            return
-        
-        acquired = self.update_pwm_semaphore.acquire(blocking=False)
-        if acquired:
-            try:
-                import globals
-                if 1 in globals.powerboardDict:
-                    await run.io_bound(globals.powerboardDict[1].semaphore.acquire)
-                    globals.powerboardDict[1].semaphore.release()  # Wait for semaphore before grabbing new values
-                    
-                    # Get current running speeds and update only automatic ones
-                    current_pwm = globals.powerboardDict[1].get_running_fan_pwm()
-                    row0_pwm = speeds[0] if speeds[0] is not None else current_pwm[0]
-                    row1_pwm = speeds[1] if speeds[1] is not None else current_pwm[1]
-                    row2_pwm = speeds[2] if speeds[2] is not None else current_pwm[2]
-                    
-                    # Set the running PWM values
-                    globals.powerboardDict[1].set_running_fan_pwm(row0_pwm, row1_pwm, row2_pwm)
-                    
-                    # Update the powerboard with the latest values
-                    await run.io_bound(
-                        globals.powerboardDict[1].update_fan_speed, 
-                        row0_pwm, 
-                        row1_pwm, 
-                        row2_pwm
-                    )
-                    
-                    # Only show notification if speeds actually changed
-                    changed_walls = []
-                    if speeds[0] is not None: changed_walls.append("Wall 1")
-                    if speeds[1] is not None: changed_walls.append("Wall 2") 
-                    if speeds[2] is not None: changed_walls.append("Wall 3")
-                    
-                    if changed_walls:
-                        ui.notify(
-                            f"🤖 Auto: {', '.join(changed_walls)} updated",
-                            position='bottom-right', 
-                            type='info', 
-                            group=False,
-                            timeout=1000  # Shorter timeout for auto updates
-                        )
-                        
-            except Exception as e:
-                logger.error(f"Error in automatic fan speed update: {e}")
-            finally:
-                self.update_pwm_semaphore.release()
     
     def get_fan_wall_status(self, wall_id: int) -> Optional[Dict[str, Any]]:
         """Get status of a specific fan wall."""
@@ -541,43 +568,41 @@ class FanControlService:
         return slider_list[3].value if len(slider_list) > 3 and slider_list[3] else 0
     
     async def request_update_fan_speed(self, slider_list: List):
-        """Request fan speed update with semaphore protection."""
-        # Skip if we're updating sliders programmatically to prevent feedback loops
+        """Request fan speed update for walls 1–3 using their current PB/header assignments."""
         if self.updating_sliders_programmatically:
             return
-            
-        # Get the current slider values right when semaphore becomes available
-        def get_current_values():
-            return self.get_current_slider_values(slider_list)
-        
+
         acquired = self.update_pwm_semaphore.acquire(blocking=False)
         if acquired:
             try:
                 import globals
-                if 1 in globals.powerboardDict:
-                    await run.io_bound(globals.powerboardDict[1].semaphore.acquire)
-                    globals.powerboardDict[1].semaphore.release()  # Wait for semaphore before grabbing new values
-                    
-                    # Get the latest values right here when semaphore is available
-                    row0_pwm, row1_pwm, row2_pwm = get_current_values()
-                    
-                    # Set the running PWM values
-                    globals.powerboardDict[1].set_running_fan_pwm(row0_pwm, row1_pwm, row2_pwm)
-                    
+                # Build per-PB speed maps from walls 1/2/3
+                pb_speeds: Dict[int, list] = {}
+                for wall_id, slider_idx in ((1, 0), (2, 1), (3, 2)):
+                    wall = self.fan_walls.get(wall_id)
+                    if not wall or wall.powerboard_id is None or wall.header_index is None:
+                        continue
+                    if slider_idx >= len(slider_list) or slider_list[slider_idx] is None:
+                        continue
+                    loc = wall.powerboard_id
+                    pb_obj = self._pb_for_location(loc)
+                    if pb_obj is None:
+                        continue
+                    if loc not in pb_speeds:
+                        pb_speeds[loc] = {'pb': pb_obj, 'speeds': list(pb_obj.get_running_fan_pwm())}
+                    pb_speeds[loc]['speeds'][wall.header_index] = slider_list[slider_idx].value
+
+                for loc, entry in pb_speeds.items():
+                    pb_obj = entry['pb']
+                    speeds = entry['speeds']
+                    await run.io_bound(pb_obj.semaphore.acquire)
+                    pb_obj.semaphore.release()
+                    pb_obj.set_running_fan_pwm(*speeds)
                     ui.notify(
-                        f"PWM updated {row0_pwm}, {row1_pwm}, {row2_pwm}",
-                        position='bottom-right', 
-                        type='positive', 
-                        group=False
+                        f"PWM updated {speeds[0]}, {speeds[1]}, {speeds[2]}",
+                        position='bottom-right', type='positive', group=False
                     )
-                    
-                    # Update the powerboard with the latest values
-                    await run.io_bound(
-                        globals.powerboardDict[1].update_fan_speed, 
-                        row0_pwm, 
-                        row1_pwm, 
-                        row2_pwm
-                    )
+                    await run.io_bound(pb_obj.update_fan_speed, *speeds)
             except Exception as e:
                 logger.error(f"Error updating fan speed: {e}")
                 ui.notify("Fan speed update failed", position='bottom-right', type='negative', group=False)
@@ -585,43 +610,33 @@ class FanControlService:
                 self.update_pwm_semaphore.release()
 
     async def request_update_auxiliary_fan_speed(self, slider_list: List):
-        """Request auxiliary fan speed update with UI queue protection for second powerboard."""
-        # Skip if we're updating sliders programmatically to prevent feedback loops
+        """Request auxiliary fan speed update for wall 4 using its current PB/header assignment."""
         if self.updating_sliders_programmatically:
             return
-            
+
         import globals
-        if 2 not in globals.powerboardDict:
+        wall = self.fan_walls.get(4)
+        if not wall or wall.powerboard_id is None or wall.header_index is None:
             return
-        
-        # Get the current auxiliary slider value right when semaphore becomes available
-        def get_current_aux_value():
-            return self.get_auxiliary_slider_value(slider_list)
-            
+        pb_obj = self._pb_for_location(wall.powerboard_id)
+        if pb_obj is None:
+            return
+
         acquired = self.update_aux_pwm_semaphore.acquire(blocking=False)
         if acquired:
             try:
-                pb = globals.powerboardDict[2]
-                await run.io_bound(pb.semaphore.acquire)
-                pb.semaphore.release()  # Wait for semaphore before updating
-                
-                # Get the latest auxiliary value right here when semaphore is available
-                aux_pwm = get_current_aux_value()
-                
+                await run.io_bound(pb_obj.semaphore.acquire)
+                pb_obj.semaphore.release()
+
+                aux_pwm = self.get_auxiliary_slider_value(slider_list)
+                speeds = list(pb_obj.get_running_fan_pwm())
+                speeds[wall.header_index] = aux_pwm
+
                 ui.notify(
                     f"Auxiliary PWM updated {aux_pwm}",
-                    position='bottom-right', 
-                    type='positive', 
-                    group=False
+                    position='bottom-right', type='positive', group=False
                 )
-                
-                # Update the powerboard with the latest value
-                await run.io_bound(
-                    pb.update_fan_speed, 
-                    aux_pwm, 
-                    aux_pwm, 
-                    aux_pwm
-                )
+                await run.io_bound(pb_obj.update_fan_speed, *speeds)
             except Exception as e:
                 logger.error(f"Error updating auxiliary fan speed: {e}")
                 ui.notify("Auxiliary fan speed update failed", position='bottom-right', type='negative', group=False)
@@ -659,76 +674,91 @@ class FanControlService:
             pb2.set_running_fan_pwm(aux, aux, aux)
         ui.notify("PWM set.", position='bottom-right', type='positive', group=False)
 
-    async def dialog_handler_discard(self, slider_list: List, 
+    async def dialog_handler_discard(self, slider_list: List,
                                    update_fan_speed_callback: Callable,
                                    update_aux_fan_speed_callback: Callable):
-        """Handle discarding fan speed changes for both powerboards."""
+        """Handle discarding fan speed changes, restoring saved values from each wall's assigned PB."""
         import globals
-        
-        # Reset powerboard 1 values
-        if 1 in globals.powerboardDict:
-            previous_pwm = globals.powerboardDict[1].get_saved_fan_pwm()
-            if len(slider_list) > 2:
-                self.set_slider_value_without_callback(slider_list[0], previous_pwm[0])
-                self.set_slider_value_without_callback(slider_list[1], previous_pwm[1])
-                self.set_slider_value_without_callback(slider_list[2], previous_pwm[2])
-                
-                await update_fan_speed_callback()
-                globals.powerboardDict[1].set_running_fan_pwm(previous_pwm[0], previous_pwm[1], previous_pwm[2])
-        
-        # Reset powerboard 2 values if it exists
-        if 2 in globals.powerboardDict and len(slider_list) > 3:
-            previous_aux_pwm = globals.powerboardDict[2].get_saved_fan_pwm()[2]  # Get saved auxiliary speed
-            self.set_slider_value_without_callback(slider_list[3], previous_aux_pwm)
-            
-            # Also update the running PWM on powerboard 2
+
+        # Reset main fan walls 1/2/3
+        for wall_id, slider_idx in ((1, 0), (2, 1), (3, 2)):
+            wall = self.fan_walls.get(wall_id)
+            if not wall or wall.powerboard_id is None or wall.header_index is None:
+                continue
+            pb_obj = self._pb_for_location(wall.powerboard_id)
+            if pb_obj is None:
+                continue
+            if slider_idx >= len(slider_list) or slider_list[slider_idx] is None:
+                continue
+            saved = pb_obj.get_saved_fan_pwm()
+            self.set_slider_value_without_callback(slider_list[slider_idx], saved[wall.header_index])
+
+        await update_fan_speed_callback()
+
+        # Reset aux wall 4
+        wall4 = self.fan_walls.get(4)
+        pb4 = self._pb_for_location(wall4.powerboard_id) if (wall4 and wall4.powerboard_id is not None) else None
+        if (pb4 and wall4.header_index is not None
+                and len(slider_list) > 3 and slider_list[3] is not None):
+            saved4 = pb4.get_saved_fan_pwm()
+            self.set_slider_value_without_callback(slider_list[3], saved4[wall4.header_index])
             await update_aux_fan_speed_callback()
-            globals.powerboardDict[2].set_running_fan_pwm(previous_aux_pwm, previous_aux_pwm, previous_aux_pwm)
-        
+
+        # Restore running PWM on each PB to its saved values
+        for pb_id, pb in globals.powerboardDict.items():
+            saved = pb.get_saved_fan_pwm()
+            pb.set_running_fan_pwm(*saved)
+
         ui.notify(
             "Fan speeds reset to saved values",
-            position='bottom-right', 
-            type='positive', 
-            group=False
+            position='bottom-right', type='positive', group=False
         )
 
     def check_for_changes(self, slider_list: List) -> bool:
         """Check if current slider values differ from saved powerboard values."""
         import globals
-        changes_detected = False
-        
-        # Check powerboard 1 for changes
-        if 1 in globals.powerboardDict:
-            pb1 = globals.powerboardDict[1]
-            current_values = self.get_current_slider_values(slider_list)
-            saved_values = pb1.get_saved_fan_pwm()
-            if current_values != saved_values:
-                changes_detected = True
-        
-        # Check powerboard 2 for changes if it exists
-        if 2 in globals.powerboardDict and len(slider_list) > 3:
-            pb2 = globals.powerboardDict[2]
-            saved_aux = pb2.get_saved_fan_pwm()[2]  # Get saved auxiliary speed
-            current_aux = self.get_auxiliary_slider_value(slider_list)
-            if saved_aux != current_aux:
-                changes_detected = True
-                
-        return changes_detected
+
+        for wall_id, slider_idx in ((1, 0), (2, 1), (3, 2)):
+            wall = self.fan_walls.get(wall_id)
+            if not wall or wall.powerboard_id is None or wall.header_index is None:
+                continue
+            pb_obj = self._pb_for_location(wall.powerboard_id)
+            if pb_obj is None:
+                continue
+            if slider_idx >= len(slider_list) or slider_list[slider_idx] is None:
+                continue
+            saved = pb_obj.get_saved_fan_pwm()
+            if slider_list[slider_idx].value != saved[wall.header_index]:
+                return True
+
+        wall4 = self.fan_walls.get(4)
+        pb4 = self._pb_for_location(wall4.powerboard_id) if (wall4 and wall4.powerboard_id is not None) else None
+        if (pb4 and wall4.header_index is not None
+                and len(slider_list) > 3 and slider_list[3] is not None):
+            saved4 = pb4.get_saved_fan_pwm()
+            if slider_list[3].value != saved4[wall4.header_index]:
+                return True
+
+        return False
 
     def get_saved_pwm_values(self) -> tuple:
-        """Get saved PWM values from powerboards."""
+        """Get saved PWM values from each wall's assigned powerboard/header."""
         import globals
-        
-        pb1_values = (0, 0, 0)
-        pb2_value = 0
-        
-        if 1 in globals.powerboardDict:
-            pb1_values = globals.powerboardDict[1].get_saved_fan_pwm()
-            
-        if 2 in globals.powerboardDict:
-            pb2_value = globals.powerboardDict[2].get_saved_fan_pwm()[2]
-            
-        return pb1_values, pb2_value
+
+        wall_saved = [0, 0, 0]
+        for wall_id in [1, 2, 3]:
+            wall = self.fan_walls.get(wall_id)
+            pb_obj = self._pb_for_location(wall.powerboard_id) if wall else None
+            if pb_obj and wall.header_index is not None:
+                wall_saved[wall_id - 1] = pb_obj.get_saved_fan_pwm()[wall.header_index]
+
+        aux_saved = 0
+        wall4 = self.fan_walls.get(4)
+        pb4 = self._pb_for_location(wall4.powerboard_id) if wall4 else None
+        if pb4 and wall4.header_index is not None:
+            aux_saved = pb4.get_saved_fan_pwm()[wall4.header_index]
+
+        return tuple(wall_saved), aux_saved
 
     def get_fan_profile_options(self) -> List[str]:
         """Get available fan profile options."""

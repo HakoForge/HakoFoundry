@@ -32,18 +32,8 @@ def initPowerboard():
     for onePort in ports:
         if "Arduino Leonardo" in onePort.description:
             pb = Powerboard(onePort.device)
-            if layoutState and layoutState.get_pb_swap():
-                # If swap is enabled, assign powerboards inversely
-                if (pb.location == 1):
-                    powerboardDict[2] = pb
-                if (pb.location == 2):
-                    powerboardDict[1] = pb
-            else:
-                # Normal assignment
-                if (pb.location == 1):
-                    powerboardDict[1] = pb
-                if (pb.location == 2):
-                    powerboardDict[2] = pb
+            if pb.location in (1, 2):
+                powerboardDict[pb.location] = pb
 
     if len(powerboardDict) == 0:
         logger.warning("Powerboard not found")

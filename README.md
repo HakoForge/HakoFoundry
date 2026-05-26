@@ -19,6 +19,7 @@ Hako Foundry is a containerized application that combines drive health monitorin
   - **Hard Drive Temperature Monitoring**: Assign fan curves to monitor specific hard drive temperatures
   - **Drive Selection**: Choose from any detected drive in your system to use as a temperature source for fan curve control
   - **Flexible Configuration**: Mix and match Linux hardware sensors with drive temperatures for optimal cooling strategies
+- **Prometheus Metrics**: Exposes cached temperatures, drive SMART data, fan RPM/PWM, fan wall targets, and power draw at `/metrics`
 
 ## Status
 
@@ -97,6 +98,16 @@ Once the server is running, head over to the port that was configured and organi
 Add backplanes, select drives. Click on the drive banner on the top right to remove a drive. Right click on backplanes to remove them. Click on the fans to control them. Unchecking the *manual* checkbox will allow you to select a fan profile.
 
 Fan profiles are made on the *fan curve* page. There can be multiple fan profiles which can be assignd to different fan walls. Each fan profile can also have multiple fan curves. This is how you would implement multi sensor fan control. Selecting *Drives* as a temperature source will allow you to select a set of drives to use as a temperature source.
+
+## Prometheus Metrics
+
+Hako Foundry exposes Prometheus metrics on the same web port at:
+
+```text
+http://<host>:<port>/metrics
+```
+
+The endpoint reports the app's cached readings, so scrapes do not wake sleeping drives or query the powerboard serial connection directly. Exported metrics include hardware temperatures, drive temperatures, drive power cycles, fan RPM, fan PWM percentages, fan wall targets, and power draw.
 
 ## Command Breakdown
 

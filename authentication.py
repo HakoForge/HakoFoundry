@@ -12,6 +12,18 @@ from passlib.context import CryptContext
 # Configure logging
 logger = logging.getLogger("foundry_logger")
 
+# Some autofill tools set the login fields without an input event. When focus leaves a field, Quasar re-renders it
+# from its (still empty) model and wipes the text; a capture-phase focusout runs before that re-render, so it
+# re-dispatches an input event to push the browser's value into the model first.
+_SYNC_AUTOFILLED_LOGIN_JS = """<script>
+document.addEventListener('focusout', (e) => {
+  const t = e.target;
+  if (t instanceof HTMLInputElement && (t.name === 'username' || t.name === 'password') && t.value) {
+    t.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+}, true);
+</script>"""
+
 # Initialize password context for hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -328,6 +340,7 @@ def create_login_page():
                 # Normal login form for existing user
                 username_input = ui.input('Username').classes('w-full mb-4').props('autocomplete=username name=username autofocus')
                 password_input = ui.input('Password', password=True).classes('w-full mb-4').props('autocomplete=current-password name=password')
+                ui.add_body_html(_SYNC_AUTOFILLED_LOGIN_JS)
                 
                 error_label = ui.label('').classes('text-red-500 text-sm mb-4')
                 error_label.visible = False

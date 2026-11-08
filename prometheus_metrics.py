@@ -44,7 +44,8 @@ def _metric_line(metric_name: str, value: Any, **labels: Any) -> Optional[str]:
     prom_value = _to_prom_value(value)
     if prom_value is None:
         return None
-    return f"{metric_name}{_labels(**labels)} {prom_value:g}"
+    # repr(float) round-trips; format spec :g keeps 6 significant digits and truncates epoch timestamps.
+    return f"{metric_name}{_labels(**labels)} {prom_value!r}"
 
 
 def _append_metric(lines: List[str], metric_name: str, value: Any, **labels: Any) -> None:
@@ -231,6 +232,8 @@ def register_metrics_endpoint() -> None:
     from fastapi.responses import Response
     from nicegui import app
 
+    # Unauthenticated: Prometheus targets are conventionally scraped without credentials on a trusted network, and API-key auth would force header
+    # configuration on every scraper. Drive series carry the serial label; the operator accepted serial visibility.
     @app.get("/metrics", include_in_schema=False)
     def metrics() -> Response:
         return Response(generate_metrics(), media_type=CONTENT_TYPE_LATEST)

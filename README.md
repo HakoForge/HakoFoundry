@@ -114,6 +114,8 @@ http://<host>:<port>/metrics
 
 The endpoint reports the app's cached readings, so scrapes do not wake sleeping drives or query the powerboard serial connection directly. Exported metrics include hardware temperatures, drive temperatures, drive power cycles, fan RPM, fan PWM percentages, fan wall targets, and power draw.
 
+`/metrics` does not require authentication, matching standard Prometheus scrape setups. Drive metrics include a `serial` label, so restrict network access to the endpoint if drive serial numbers should not be visible.
+
 ## Command Breakdown
 
 - **Powerboard Detection**: `$(ls /dev/ttyACM* | sed 's/^/--device /')` - Automatically detects and passes powerboard USB connections

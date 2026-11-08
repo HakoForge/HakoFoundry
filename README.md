@@ -19,6 +19,7 @@ Hako Foundry is a containerized application that combines drive health monitorin
   - **Hard Drive Temperature Monitoring**: Assign fan curves to monitor specific hard drive temperatures
   - **Drive Selection**: Choose from any detected drive in your system to use as a temperature source for fan curve control
   - **Flexible Configuration**: Mix and match Linux hardware sensors with drive temperatures for optimal cooling strategies
+- **Prometheus Metrics**: Exposes cached temperatures, drive SMART data, fan RPM/PWM, fan wall targets, and power draw at `/metrics`
 
 ## Status
 
@@ -33,6 +34,7 @@ Credential input will be done on first visit.
 ```bash
 sudo docker run -d \
   --pull always \
+  --restart unless-stopped \
   $(ls /dev/ttyACM* | sed 's/^/--device /') \
   $(lsblk -d -n -o NAME | grep '^sd' | sed 's|^|--device /dev/|') \
   --cap-add SYS_RAWIO \
@@ -48,6 +50,7 @@ sudo docker run -d \
 ```bash
 sudo docker run -d \
   --pull always \
+  --restart unless-stopped \
   $(ls /dev/ttyACM* | sed 's/^/--device /') \
   $(lsblk -d -n -o NAME | grep '^sd' | sed 's|^|--device /dev/|') \
   --cap-add SYS_RAWIO \
@@ -60,6 +63,9 @@ sudo docker run -d \
   hakoforge/hako-foundry
 ```
 
+If `SECRET` is not provided, the app generates a random secret once and stores it in the config volume as `config/storage_secret`, so sessions survive restarts; set `SECRET` explicitly to control it.
+
+The generated file is created with owner-only permissions (0600); delete it to rotate the secret and invalidate existing sessions. An empty `SECRET` is treated as set.
 
 ## Docker Compose
 
@@ -98,6 +104,20 @@ Add backplanes, select drives. Click on the drive banner on the top right to rem
 
 Fan profiles are made on the *fan curve* page. There can be multiple fan profiles which can be assignd to different fan walls. Each fan profile can also have multiple fan curves. This is how you would implement multi sensor fan control. Selecting *Drives* as a temperature source will allow you to select a set of drives to use as a temperature source.
 
+## Prometheus Metrics
+
+Hako Foundry exposes Prometheus metrics on the same web port at:
+
+```text
+http://<host>:<port>/metrics
+```
+
+The endpoint reports the app's cached readings, so scrapes do not wake sleeping drives or query the powerboard serial connection directly. Exported metrics include hardware temperatures, drive temperatures, drive power cycles, fan RPM, fan PWM percentages, fan wall targets, and power draw. `hako_foundry_build_info` carries the running version and git revision as labels.
+
+The running version is also shown under the logo in the side menu and returned by `/api/v1/status`. Docker images get it from the `APP_VERSION` and `APP_REVISION` build args, which CI sets from the image tag and commit; a local run from a git checkout uses `git describe`.
+
+`/metrics` does not require authentication, matching standard Prometheus scrape setups. Drive metrics include a `serial` label, so restrict network access to the endpoint if drive serial numbers should not be visible.
+
 ## Command Breakdown
 
 - **Powerboard Detection**: `$(ls /dev/ttyACM* | sed 's/^/--device /')` - Automatically detects and passes powerboard USB connections
@@ -112,6 +132,7 @@ Fan profiles are made on the *fan curve* page. There can be multiple fan profile
 - **Persistent Storage**: `-v foundry_config:/app/config/` - Creates a Docker volume to preserve configuration between restarts
 - **Hardware Temp Sensors**: `-v /sys/class/thermal:/sys/class/thermal:ro -v /sys/class/hwmon:/sys/class/hwmon:ro`  - Gives acces to the hardware sensor directory for fan curves
 - **Port Mapping**: `-p 8080:8080` - Maps host port to container port (host:container)
+- **Automatic Restart**: `--restart unless-stopped` - Starts the container again after a reboot or Docker restart, unless you stopped it yourself. To add it to an existing container: `sudo docker update --restart unless-stopped <container>`
 - **Running in the Background**: `-d` - Runs the container in detached mode so it doesn't stop when the shell stops. Alternatively, you can use `tmux` or `screen`
 
 ## Roadmap

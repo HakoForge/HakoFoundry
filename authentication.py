@@ -12,6 +12,18 @@ from passlib.context import CryptContext
 # Configure logging
 logger = logging.getLogger("foundry_logger")
 
+# Some autofill tools set the login fields without an input event. When focus leaves a field, Quasar re-renders it
+# from its (still empty) model and wipes the text; a capture-phase focusout runs before that re-render, so it
+# re-dispatches an input event to push the browser's value into the model first.
+_SYNC_AUTOFILLED_LOGIN_JS = """<script>
+document.addEventListener('focusout', (e) => {
+  const t = e.target;
+  if (t instanceof HTMLInputElement && (t.name === 'username' || t.name === 'password') && t.value) {
+    t.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+}, true);
+</script>"""
+
 # Initialize password context for hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -186,7 +198,12 @@ def authenticate_session(username: str):
             'created_at': time.time(),
             'last_seen': time.time()
         }
-        app.storage.browser['username'] = username
+        try:
+            # Browser storage can't be written once the page response has been sent;
+            # the session above is what authentication relies on.
+            app.storage.browser['username'] = username
+        except Exception:
+            pass
         
         logger.info(f"Authenticated session for {username}: {session_token[:8]}...")
         
@@ -244,9 +261,23 @@ def cleanup_expired_sessions(max_age_hours: int = 24):
 def create_login_page():
     """Create login page UI."""
 
-    def handle_login():
-        username = username_input.value.strip()
-        password = password_input.value
+    async def handle_login():
+        # Password managers fill the browser's fields directly, and the server-side
+        # value can lag behind that, so read what is in the fields right now.
+        username, password = username_input.value or '', password_input.value or ''
+        try:
+            vals = await ui.run_javascript(
+                f'const q = id => {{ const r = document.getElementById("c" + id); const i = r && (r.tagName === "INPUT" ? r : r.querySelector("input")); return i ? i.value : ""; }};'
+                f'return [q({username_input.id}), q({password_input.id})];', timeout=3.0)
+            if isinstance(vals, list) and len(vals) == 2:
+                username, password = vals[0] or username, vals[1] or password
+        except Exception as e:
+            logger.debug(f"Login: could not read field values from the browser ({e})")
+        username = username.strip()
+        if not password:
+            # Nothing entered yet: move to the password field instead of trying an empty login
+            password_input.run_method('focus')
+            return
         
         logger.info(f"Login attempt: {username}")
         
@@ -307,14 +338,16 @@ def create_login_page():
                     return
                 
                 # Normal login form for existing user
-                username_input = ui.input('Username').classes('w-full mb-4')
-                password_input = ui.input('Password', password=True).classes('w-full mb-4')
+                username_input = ui.input('Username').classes('w-full mb-4').props('autocomplete=username name=username autofocus')
+                password_input = ui.input('Password', password=True).classes('w-full mb-4').props('autocomplete=current-password name=password')
+                ui.add_body_html(_SYNC_AUTOFILLED_LOGIN_JS)
                 
                 error_label = ui.label('').classes('text-red-500 text-sm mb-4')
                 error_label.visible = False
                 
                 ui.button('Login', on_click=handle_login).classes('w-full border-solid border-2 border-[#ffdd00]').props('flat color="white"')
                 password_input.on('keydown.enter', handle_login)
+                username_input.on('keydown.enter', lambda: password_input.run_method('focus'))
                 ui.space().classes('h-6')
             with ui.row().classes('justify-center w-full'):
                 with ui.link(target='https://discord.com/invite/3kjpbmckgm'):

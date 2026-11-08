@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from nicegui import ui, app
 import authentication
+from version import get_version_display
 """ The main layout for every page. Left drawer mainly."""
 @contextmanager
 def frame(navtitle: str):
@@ -28,6 +29,7 @@ def frame(navtitle: str):
                     ui.image('res/Hako_Logo.png').classes('w-6')
                 with ui.item_section():
                     ui.item_label('HAKOFORGE FOUNDRY').classes('text-nowrap')
+                    ui.item_label(get_version_display()).props('caption').classes('text-nowrap').style('color: #9e9e9e')
 
             ui.separator()
 

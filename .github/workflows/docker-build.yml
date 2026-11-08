@@ -58,6 +58,9 @@ jobs:
         push: ${{ github.event_name != 'pull_request' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
+        build-args: |
+          APP_VERSION=${{ steps.meta.outputs.version }}
+          APP_REVISION=${{ github.sha }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
@@ -85,6 +88,9 @@ jobs:
         push: ${{ github.event_name != 'pull_request' }}
         tags: ${{ steps.meta_arm64.outputs.tags }}
         labels: ${{ steps.meta_arm64.outputs.labels }}
+        build-args: |
+          APP_VERSION=${{ steps.meta_arm64.outputs.version }}
+          APP_REVISION=${{ github.sha }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
 

@@ -156,11 +156,16 @@ class SmartCtlInterface:
             return []
 
     @classmethod
-    def get_smart_data(cls, device_id: str, debug) -> Optional[Drive]:
-        """Get S.M.A.R.T. data for a specific device."""
+    def get_smart_data(cls, device_id: str, debug, allow_wakeup: bool = False) -> Optional[Drive]:
+        """Get S.M.A.R.T. data for a specific device.
+
+        allow_wakeup: if True, omits -n standby so the drive is spun up if needed.
+        Use this on first encounter so a drive in standby at startup is still registered.
+        """
         try:
             device_path = device_id.split(' ')[0]
-            json_output, returncode = cls.execute_command(f"-n standby --xall --json --device auto {device_path}")
+            standby_flag = "" if allow_wakeup else "-n standby "
+            json_output, returncode = cls.execute_command(f"{standby_flag}--xall --json --device auto {device_path}")
 
             # Exit code 2 means the drive is in standby/sleep — do not wake it.
             if returncode == 2:
@@ -318,8 +323,11 @@ class DriveManager:
 
         for device_id in drive_ids:
             device_path = device_id.split(' ')[0]
+            # Wake the drive on first encounter so it isn't silently skipped if
+            # it happens to be in standby at startup. Subsequent scans respect standby.
+            is_first_encounter = device_path not in self._device_path_to_hash
             try:
-                drive = SmartCtlInterface.get_smart_data(device_id, self._debug)
+                drive = SmartCtlInterface.get_smart_data(device_id, self._debug, allow_wakeup=is_first_encounter)
                 if drive:
                     drives[drive.hash] = drive
                     self._device_path_to_hash[device_path] = drive.hash
@@ -469,7 +477,7 @@ class Chassis:
     """Manages chassis layout and backplane configuration."""
 
     DEFAULT_CONFIG_FILE = "config/layout_config.json"
-    MAX_BACKPLANES = 12
+    MAX_BACKPLANES = 16
 
     def __init__(self, config_file: Optional[str] = None):
         self.config_file = config_file or self.DEFAULT_CONFIG_FILE
@@ -481,7 +489,11 @@ class Chassis:
         # Preferences
         self.chassis_orientation = False  # False for normal, True for inverted
         self.units = "C"  # Temperature units: "C" for Celsius, "F" for Fahrenheit
-        self.pb_swap = False # Powerboard swap preference
+        # Read-only compatibility input preserved on disk so FanControlService can
+        # re-derive default fan wall assignments on every start for walls that still
+        # lack per-wall powerboard_id/header_index. Ignored once a wall has explicit
+        # assignments. None when layout_config.json has no pb_swap key.
+        self.legacy_pb_swap: Optional[bool] = None
 
         if config_file:
             self._load_config()
@@ -512,7 +524,8 @@ class Chassis:
             else:
                 self.chassis_orientation = bool(orientation_value)
             self.units = options.get("units", "C")
-            self.pb_swap = options.get("pb_swap", False)
+            if "pb_swap" in options:
+                self.legacy_pb_swap = bool(options["pb_swap"])
 
             # Ensure we have the right number of backplane slots
             while len(backplanes_data) < self.MAX_BACKPLANES:
@@ -579,14 +592,9 @@ class Chassis:
         """Get temperature units."""
         return self.units
 
-    def set_pb_swap(self, value: bool) -> None:
-        """Set powerboard swap option."""
-        self.pb_swap = value
-        self.save_config()
-
-    def get_pb_swap(self) -> bool:
-        """Get powerboard swap option."""
-        return self.pb_swap
+    def get_legacy_pb_swap(self) -> bool:
+        """Return the legacy pb_swap flag (False when absent from layout_config.json)."""
+        return bool(self.legacy_pb_swap)
 
     def chassis_is_inverted(self) -> bool:
         """Get chassis orientation setting. Returns True if inverted, False if normal."""
@@ -684,10 +692,13 @@ class Chassis:
                         "show_sn": self.show_sn,
                         "hide_multi_curve_dialog": self.hide_multi_curve_dialog,
                         "chassis_orientation": self.chassis_orientation,
-                        "units": self.units,
-                        "pb_swap": self.pb_swap
+                        "units": self.units
                     }
             }
+            # Written back unchanged (never deleted) so the migration stays re-derivable until
+            # fan_control_config.json holds explicit assignments for every wall.
+            if self.legacy_pb_swap is not None:
+                config_data["options"]["pb_swap"] = self.legacy_pb_swap
 
             # Ensure config directory exists
             config_path = Path(self.config_file)

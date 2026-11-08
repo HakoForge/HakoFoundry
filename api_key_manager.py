@@ -45,17 +45,32 @@ class ApiKeyManager:
         return self._cache
 
     def _save_config(self, config: dict):
-        """Persist key config to disk with owner-only (600) permissions, and update cache."""
+        """Atomically persist key config with owner-only (600) permissions, then update cache.
+
+        Re-raises the write error after cleanup so callers never report a change that was not
+        persisted; the cache is left at the last saved config.
+        """
+        # Sibling temp file plus os.replace keeps the key store intact if the write is interrupted.
+        tmp_path = API_CONFIG_FILE + ".tmp"
         try:
-            with open(API_CONFIG_FILE, "w") as f:
+            with open(tmp_path, "w") as f:
                 json.dump(config, f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
             try:
-                os.chmod(API_CONFIG_FILE, stat.S_IRUSR | stat.S_IWUSR)
+                os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
             except OSError as e:
                 logger.warning(f"Could not set permissions on API key config: {e}")
+            os.replace(tmp_path, API_CONFIG_FILE)
             self._cache = config
         except Exception as e:
             logger.error(f"Error saving API key config: {e}")
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError as cleanup_error:
+                logger.error(f"Could not remove temporary API key config {tmp_path}: {cleanup_error}")
+            raise
 
     @staticmethod
     def _hash(key: str) -> str:
@@ -75,7 +90,10 @@ class ApiKeyManager:
         ]
 
     def create_key(self, name: str) -> str:
-        """Generate, store, and return a new API key. Shown to the user exactly once."""
+        """Generate, store, and return a new API key. Shown to the user exactly once.
+
+        Raises when the key cannot be persisted, so no unusable key is ever shown.
+        """
         raw = "hf-api_" + secrets.token_urlsafe(32)
         new_entry = {
             "id": str(uuid.uuid4()),
@@ -90,7 +108,10 @@ class ApiKeyManager:
         return raw
 
     def delete_key(self, key_id: str) -> bool:
-        """Remove a key by id. Returns True if a key was removed, False if not found."""
+        """Remove a key by id. Returns True if a key was removed, False if not found.
+
+        Raises when the updated key list cannot be persisted; the key then stays valid.
+        """
         existing = self._load_config().get("keys", [])
         new_keys = [k for k in existing if k["id"] != key_id]
         if len(new_keys) == len(existing):

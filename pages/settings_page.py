@@ -313,7 +313,12 @@ def settingsPage():
                     create_error.text = 'Key name is required'
                     create_error.visible = True
                     return
-                state['generated_key'] = api_key_manager.create_key(name)
+                try:
+                    state['generated_key'] = api_key_manager.create_key(name)
+                except Exception as e:
+                    create_error.text = f'Could not save API key: {e}'
+                    create_error.visible = True
+                    return
                 name_input.value = ''
                 create_error.visible = False
                 create_dialog.close()
@@ -339,9 +344,15 @@ def settingsPage():
                 await ui.run_javascript(f'navigator.clipboard.writeText({json.dumps(state["generated_key"])})')
                 ui.notify('Key copied to clipboard', position='bottom-right', type='positive', group=False)
 
+            def close_key_dialog():
+                # Clear the raw key from memory and the label once the dialog is dismissed; only its hash is stored.
+                state['generated_key'] = ''
+                key_display_label.set_text('')
+                show_key_dialog.close()
+
             with ui.row().classes('w-full justify-end gap-2 mt-4'):
                 ui.button('Copy', icon='content_copy', on_click=copy_key).classes('border-solid border-2 border-[#ffdd00]').props('flat color=white')
-                ui.button('Done', on_click=show_key_dialog.close).props('flat color=white')
+                ui.button('Done', on_click=close_key_dialog).props('flat color=white')
 
         with ui.dialog().props('persistent') as delete_dialog, ui.card().classes('p-6'):
             ui.label('Delete API Key?').classes('text-lg font-bold mb-2')
@@ -350,7 +361,11 @@ def settingsPage():
 
             def do_delete():
                 if state['pending_delete_id']:
-                    api_key_manager.delete_key(state['pending_delete_id'])
+                    try:
+                        api_key_manager.delete_key(state['pending_delete_id'])
+                    except Exception as e:
+                        ui.notify(f'Could not delete API key: {e}', position='bottom-right', type='negative', group=False)
+                        return
                     state['pending_delete_id'] = None
                     delete_dialog.close()
                     api_keys_list.refresh()

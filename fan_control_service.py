@@ -7,6 +7,7 @@ with proper semaphore handling and UI feedback. It also includes integrated fan 
 management for profile-based fan control.
 """
 
+import asyncio
 import threading
 import json
 import os
@@ -39,6 +40,10 @@ _WALL_NAMES = {
     5: "Auxiliary Fan 2",
     6: "Auxiliary Fan 3",
 }
+
+
+class FanOverrideError(Exception):
+    """Raised when an override engage/release hardware write fails."""
 
 
 def _as_pwm_int(value) -> int:
@@ -122,6 +127,15 @@ class FanControlService:
         # True when an unreadable config could not be moved aside; _save_config then refuses
         # to overwrite it so the only copy of the user's settings is never replaced by defaults.
         self._config_save_blocked: bool = False
+
+        # Pre-override state of every wall targeted by engage_override; None when no override.
+        # Structure: {wall_id: {'manual', 'current_speed', 'powerboard_id', 'header_index'}}
+        # Keys are only the walls an engage call targeted; release restores those walls alone. The override
+        # is in-memory only, so a restart returns every wall to its configured state.
+        self.override_snapshot: Optional[Dict[int, Dict]] = None
+        # Serialises engage_override/release_override: both await board writes, and an engage
+        # rollback interleaved with a release would act on a snapshot the release already cleared.
+        self._override_lock = asyncio.Lock()
 
         # Load configuration on startup
         self._load_config()
@@ -292,11 +306,16 @@ class FanControlService:
             
             # Save fan wall configurations
             for wall_id, wall in self.fan_walls.items():
+                persisted = {'manual': wall.manual, 'current_speed': wall.current_speed}
+                # save_config_immediate is called from many UI paths; the override must never reach disk, so
+                # overridden walls persist their snapshot values instead of live values.
+                if self.is_wall_overridden(wall_id):
+                    persisted = self.override_snapshot[wall_id]
                 config['fan_walls'][str(wall_id)] = {
                     'name': wall.name,
                     'assigned_profile': wall.assigned_profile,
-                    'manual': wall.manual,
-                    'current_speed': wall.current_speed,
+                    'manual': persisted['manual'],
+                    'current_speed': persisted['current_speed'],
                     'powerboard_id': wall.powerboard_id,
                     'header_index': wall.header_index,
                     'watt_label': wall.watt_label,
@@ -384,6 +403,151 @@ class FanControlService:
             if wall.powerboard_id == pb_obj.location and wall.header_index is not None:
                 speeds[wall.header_index] = _as_pwm_int(wall.current_speed)
         pb_obj.update_fan_speed(*speeds)
+
+    def is_override_active(self) -> bool:
+        """Return True while an API fan override is engaged."""
+        return self.override_snapshot is not None
+
+    def is_wall_overridden(self, wall_id: int) -> bool:
+        """Return True when wall_id is part of the active override."""
+        return self.override_snapshot is not None and wall_id in self.override_snapshot
+
+    async def _write_board_arrays(self, pb_arrays: Dict[int, list]) -> Dict[int, tuple]:
+        """Write per-board running arrays in location order; return pre-write arrays of boards written.
+
+        Raises FanOverrideError on the first failed write, after attempting to restore every
+        board already written to its pre-write array.
+        """
+        written: Dict[int, tuple] = {}
+        for location in sorted(pb_arrays):
+            pb_obj = self._pb_for_location(location)
+            # Powerboard.update_fan_speed updates its running cache only after a successful serial write, so after
+            # a failed rollback the ping loop sees fan_speed_current() False and re-applies wall speeds.
+            pre_write = pb_obj.get_running_fan_pwm()
+            try:
+                await run.io_bound(pb_obj.update_fan_speed, *pb_arrays[location])
+            except Exception as e:
+                for done_location, previous in written.items():
+                    try:
+                        await run.io_bound(self._pb_for_location(done_location).update_fan_speed, *previous)
+                    except Exception as rollback_error:
+                        logger.error(f"Override rollback of powerboard {done_location} failed: {rollback_error}")
+                raise FanOverrideError(f"powerboard {location} write failed: {e}") from e
+            written[location] = pre_write
+        return written
+
+    def _board_arrays_for(self, assignments: Dict[int, tuple]) -> Dict[int, list]:
+        """Build running arrays for connected boards from {wall_id: (location, header, speed)}."""
+        pb_arrays: Dict[int, list] = {}
+        for location, header_index, speed in assignments.values():
+            pb_obj = self._pb_for_location(location)
+            if pb_obj is None or header_index is None:
+                continue
+            if location not in pb_arrays:
+                pb_arrays[location] = list(pb_obj.get_running_fan_pwm())
+            pb_arrays[location][header_index] = _as_pwm_int(speed)
+        return pb_arrays
+
+    async def engage_override(self, targets: Dict[int, int]) -> Dict[str, Any]:
+        """Force the targeted walls to manual mode at the given speeds and write them to hardware.
+
+        Raises FanOverrideError when a board write fails; boards already written, wall
+        fields and the snapshot are rolled back first.
+        """
+        async with self._override_lock:
+            return await self._engage_override_locked(targets)
+
+    async def _engage_override_locked(self, targets: Dict[int, int]) -> Dict[str, Any]:
+        """engage_override body; caller holds _override_lock."""
+        snapshot_taken = self.override_snapshot is None
+        if self.override_snapshot is None:
+            self.override_snapshot = {}
+
+        applied: Dict[str, int] = {}
+        skipped: list = []
+        newly_added: list = []
+        touched: Dict[int, tuple] = {}
+        hardware: Dict[int, tuple] = {}
+
+        for wall_id, speed in targets.items():
+            wall = self.fan_walls.get(wall_id)
+            if wall is None:
+                continue
+            if wall.powerboard_id is None or wall.header_index is None:
+                skipped.append({"wall": wall.name, "reason": "no hardware assignment"})
+                continue
+            if wall_id not in self.override_snapshot:
+                self.override_snapshot[wall_id] = {
+                    'manual': wall.manual,
+                    'current_speed': wall.current_speed,
+                    'powerboard_id': wall.powerboard_id,
+                    'header_index': wall.header_index,
+                }
+                newly_added.append(wall_id)
+            touched[wall_id] = (wall.manual, wall.current_speed)
+            wall.manual = True
+            wall.current_speed = speed
+            if self._pb_for_location(wall.powerboard_id) is None:
+                skipped.append({"wall": wall.name, "reason": "powerboard not connected"})
+                continue
+            applied[wall.name] = speed
+            hardware[wall_id] = (wall.powerboard_id, wall.header_index, speed)
+
+        try:
+            await self._write_board_arrays(self._board_arrays_for(hardware))
+        except FanOverrideError:
+            for wall_id, (manual, current_speed) in touched.items():
+                self.fan_walls[wall_id].manual = manual
+                self.fan_walls[wall_id].current_speed = current_speed
+            if self.override_snapshot is not None:
+                for wall_id in newly_added:
+                    self.override_snapshot.pop(wall_id, None)
+            raise
+        finally:
+            if not self.override_snapshot:
+                self.override_snapshot = None
+
+        snapshot_taken = snapshot_taken and self.override_snapshot is not None
+        return {"applied": applied, "skipped": skipped, "snapshot_taken": snapshot_taken}
+
+    async def release_override(self) -> bool:
+        """Restore every overridden wall and write the restored speeds to hardware.
+
+        Returns False when no override is active. Raises FanOverrideError when a board write
+        fails; the snapshot is kept so the release can be retried.
+        """
+        async with self._override_lock:
+            return await self._release_override_locked()
+
+    async def _release_override_locked(self) -> bool:
+        """release_override body; caller holds _override_lock."""
+        if self.override_snapshot is None:
+            return False
+
+        restored: Dict[int, tuple] = {}
+        for wall_id, saved in self.override_snapshot.items():
+            wall = self.fan_walls.get(wall_id)
+            if wall is None:
+                continue
+            wall.manual = saved['manual']
+            wall.current_speed = saved['current_speed']
+            restored[wall_id] = (saved['powerboard_id'], saved['header_index'], saved['current_speed'])
+
+        pb_arrays = self._board_arrays_for(restored)
+        first_error: Optional[Exception] = None
+        for location in sorted(pb_arrays):
+            try:
+                await run.io_bound(self._pb_for_location(location).update_fan_speed, *pb_arrays[location])
+            except Exception as e:
+                logger.error(f"Override release write to powerboard {location} failed: {e}")
+                if first_error is None:
+                    first_error = FanOverrideError(f"powerboard {location} write failed: {e}")
+        if first_error is not None:
+            raise first_error
+
+        self.override_snapshot = None
+        self.save_config_immediate()
+        return True
 
     def _pb_for_location(self, location: Optional[int]):
         """Return the Powerboard whose V: location matches, or None."""

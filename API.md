@@ -65,8 +65,9 @@ Returns metrics for a single powerboard. `location` is `1` or `2`.
   "firmware_version": "...",
   "is_connected": true,
   "fan": {
-    "pwm_percent": { "row1": 60, "row2": 60, "row3": 60 },
-    "rpm":         { "row1": 1200, "row2": 1180, "row3": null }
+    "pwm_percent":       { "row1": 60, "row2": 60, "row3": 60 },
+    "saved_pwm_percent": { "row1": 50, "row2": 50, "row3": 50 },
+    "rpm":               { "row1": 1200, "row2": 1180, "row3": null }
   },
   "power": {
     "shunt1_watts": 45.2,
@@ -79,6 +80,8 @@ Returns metrics for a single powerboard. `location` is `1` or `2`.
   }
 }
 ```
+
+`fan.pwm_percent` is the running PWM (what the fans are doing now, including any override). `fan.saved_pwm_percent` is the EEPROM value the board boots with.
 
 > RPM and wattage fields may be `null` if the first poll hasn't completed yet.
 
@@ -140,7 +143,9 @@ Same as above, filtered to one wall. Valid `wall_key` values:
 
 #### `POST /api/v1/fans/override`
 
-Engage or release a temporary fan speed override. Overrides set walls to manual mode without writing to the config on disk. The original wall states are snapshot on the first engagement and restored on release.
+Engage or release a temporary fan speed override. Overrides set walls to manual mode without writing to the config on disk. Only walls named in an engage request (or every assigned wall for a global `pwm_percent`) are overridden and reported with `override_active=true`. Each wall's state is captured the first time it is targeted and restored on release.
+
+The override is held in memory only: the persisted configuration is never modified by an override, and a service restart returns every wall to its configured state with `override_active=false`.
 
 **Request body**
 ```json
@@ -163,7 +168,9 @@ Engage or release a temporary fan speed override. Overrides set walls to manual 
 
 When `active=true`, at least one of `pwm_percent` or `walls` must be provided. Per-wall entries in `walls` take precedence over `pwm_percent`.
 
-Subsequent calls with `active=true` update speeds without replacing the original snapshot.
+Subsequent calls with `active=true` update speeds without replacing the original snapshot; newly targeted walls are added to it.
+
+Powerboards are written one at a time. If a hardware write fails during engage, boards already written are rolled back, wall states are restored, and the request answers `502` naming the failing powerboard location. If a write fails during release, the request answers `502` and the snapshot is kept so the release can be retried.
 
 **Response (engaged)**
 ```json
@@ -174,6 +181,8 @@ Subsequent calls with `active=true` update speeds without replacing the original
   "snapshot_taken": true
 }
 ```
+
+`override_active` reports whether an override is active after the call. `snapshot_taken` is `true` only when this call started a new override, i.e. no override was active before and at least one wall was captured. When every targeted wall is skipped (for example, none has a hardware assignment) and no override was already active, the response has `override_active=false` and `snapshot_taken=false`, and no fan speed changes.
 
 **Response (released)**
 ```json
@@ -187,7 +196,23 @@ Subsequent calls with `active=true` update speeds without replacing the original
 | Status | Reason |
 |--------|--------|
 | `422`  | `active=true` with no speed targets, or invalid wall key / PWM value |
+| `502`  | Powerboard write failed (engage rolled back; release keeps the snapshot) |
 | `503`  | Fan control service unavailable |
+
+**Response (502)**
+```json
+{
+  "detail": "powerboard 2 write failed: Serial communication error: write timeout; changes rolled back"
+}
+```
+
+#### Known limitations
+
+- Changes made in the web UI to the manual flag, profile or speed of an overridden wall while the override is active are not captured and are discarded when the override is released. Non-overridden walls are unaffected.
+- The override has no expiry and accepts 0 percent. A client that engages 0 percent and never releases leaves those fans stopped until release or a service restart.
+- If a rollback or release write fails, the board keeps its override speeds until it responds; the 3 second control loop re-applies the wall speeds on every tick until the write succeeds.
+- If Settings reassigns a wall to a different header while an override is active, release briefly writes the snapshot speed to the old header; the 3 second control loop corrects it on the next cycle.
+- Using Settings "Apply PWM" on a board while an API override is active overwrites the overridden walls' live speed; the override remains flagged active and release still restores the pre-override values.
 
 ---
 

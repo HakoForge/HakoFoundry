@@ -16,24 +16,35 @@ Endpoints:
 import logging
 from typing import Dict, Optional
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.security.api_key import APIKeyHeader
-from nicegui import app, run
+from nicegui import app
 from pydantic import BaseModel, field_validator
 
 import globals
 from api_key_manager import api_key_manager
+from fan_control_service import FanOverrideError
 from powerboard import PowerboardError
 
 # Wall ID aliases for auxiliary fan walls
 _WALL_ALIAS = {"aux1": 4, "aux2": 5, "aux3": 6}
 
-# Snapshot taken on the first POST {"active": true} during a session.
-# Cleared when the override is released. Never persisted to disk.
-# Structure: {wall_id: {"manual": bool, "current_speed": int}}
-_override_snapshot: Optional[Dict[int, Dict]] = None
-
 logger = logging.getLogger("foundry_logger")
+
+# NiceGUI renders every 404 as its HTML error page; API clients expect the JSON detail envelope from API.md.
+_API_PREFIX = "/api/"
+_page_404_handler = app.exception_handlers.get(404)
+
+
+async def _api_aware_404(request: Request, exc: Exception) -> Response:
+    if request.url.path.startswith(_API_PREFIX) or _page_404_handler is None:
+        detail = getattr(exc, "detail", None) or "Not Found"
+        return JSONResponse({"detail": detail}, status_code=404, headers=getattr(exc, "headers", None))
+    return await _page_404_handler(request, exc)
+
+
+app.add_exception_handler(404, _api_aware_404)
 
 _API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -58,7 +69,9 @@ def _serialize_powerboard(location: int):
         return None
 
     # PWM percentages are always available after init
-    pwm = pb.get_fan_pwm()
+    pwm = pb.get_running_fan_pwm()
+    # Both values are exposed: an override changes the running PWM while the EEPROM value stays the boot default, so one alone would hide the active override or the boot fallback.
+    saved_pwm = pb.get_saved_fan_pwm()
 
     # RPM and wattage may be unavailable if the first poll hasn't completed
     try:
@@ -85,6 +98,11 @@ def _serialize_powerboard(location: int):
                 "row1": pwm[0],
                 "row2": pwm[1],
                 "row3": pwm[2],
+            },
+            "saved_pwm_percent": {
+                "row1": saved_pwm[0],
+                "row2": saved_pwm[1],
+                "row3": saved_pwm[2],
             },
             "rpm": {
                 "row1": rpm[0],
@@ -169,7 +187,7 @@ def _serialize_fan_wall(wall_id: int):
         "rpm": rpm,
         "manual": wall.manual,
         "assigned_profile": wall.assigned_profile,
-        "override_active": _override_snapshot is not None and wall_id in _override_snapshot,
+        "override_active": svc.is_wall_overridden(wall_id),
         "powerboard_id": wall.powerboard_id,
         "header_index": wall.header_index,
     }
@@ -183,7 +201,7 @@ async def get_fans_status(_: None = Depends(_require_api_key)):
         raise HTTPException(status_code=503, detail="Fan control service not available.")
 
     return {
-        "override_active": _override_snapshot is not None,
+        "override_active": svc.is_override_active(),
         "walls": [_serialize_fan_wall(wid) for wid in sorted(svc.fan_walls.keys())],
     }
 
@@ -254,48 +272,25 @@ async def fan_override(request: OverrideRequest, _: None = Depends(_require_api_
     Engage or release a temporary fan speed override.
 
     - active=true: force all (or specific) walls to manual mode at the given speed.
-      The first call snapshots current wall state; subsequent calls with active=true
-      only update speeds without altering the snapshot.
-    - active=false: restore every wall to its pre-override state and clear the snapshot.
+      Each wall's pre-override state is captured the first time it is targeted;
+      later calls update speeds without re-capturing walls already overridden.
+    - active=false: restore every overridden wall to its pre-override state.
 
     Wall keys: "1", "2", "3" (main walls), "4"/"aux1", "5"/"aux2", "6"/"aux3" (auxiliary walls).
     Per-wall speeds in `walls` take precedence over the global `pwm_percent`.
+    A failed hardware write answers 502: engage rolls back, release keeps the snapshot for a retry.
     """
-    global _override_snapshot
-
     svc = globals.fan_control_service
     if svc is None:
         raise HTTPException(status_code=503, detail="Fan control service not available.")
 
     if not request.active:
-        if _override_snapshot is None:
+        try:
+            released = await svc.release_override()
+        except FanOverrideError as e:
+            raise HTTPException(status_code=502, detail=f"{e}; override snapshot retained, retry release")
+        if not released:
             return {"override_active": False, "detail": "No active override to release."}
-
-        pb_dict = globals.powerboardDict or {}
-        pb_updates: Dict[int, dict] = {}
-
-        for wall_id, saved in _override_snapshot.items():
-            wall = svc.fan_walls.get(wall_id)
-            if wall is None:
-                continue
-            wall.manual = saved["manual"]
-            wall.current_speed = saved["current_speed"]
-
-            pb_id = saved["powerboard_id"]
-            h_idx = saved["header_index"]
-            pb = pb_dict.get(pb_id) if pb_id is not None else None
-            if pb is not None and h_idx is not None:
-                if pb_id not in pb_updates:
-                    pb_updates[pb_id] = {"pb": pb, "speeds": list(pb.get_running_fan_pwm())}
-                pb_updates[pb_id]["speeds"][h_idx] = saved["current_speed"]
-
-        for entry in pb_updates.values():
-            pb_obj = entry["pb"]
-            speeds = entry["speeds"]
-            pb_obj.set_running_fan_pwm(*speeds)
-            await run.io_bound(pb_obj.update_fan_speed, *speeds)
-
-        _override_snapshot = None
         return {"override_active": False, "detail": "Override released. Wall states restored."}
 
     if request.pwm_percent is None and not request.walls:
@@ -316,58 +311,19 @@ async def fan_override(request: OverrideRequest, _: None = Depends(_require_api_
                 )
             per_wall[wall_id] = speed
 
-    # Snapshot on first engagement only
-    was_new = _override_snapshot is None
-    if was_new:
-        _override_snapshot = {
-            wall_id: {
-                "manual": wall.manual,
-                "current_speed": wall.current_speed,
-                "powerboard_id": wall.powerboard_id,
-                "header_index": wall.header_index,
-            }
-            for wall_id, wall in svc.fan_walls.items()
-        }
-
-    applied: Dict[str, int] = {}
-    skipped: list = []
-    pb_dict = globals.powerboardDict or {}
-    pb_updates: Dict[int, dict] = {}
-
-    for wall_id, wall in svc.fan_walls.items():
-        # Determine target speed: per-wall entry wins, then global default
+    # Per-wall entry wins, then the global default; walls covered by neither are untouched
+    targets: Dict[int, int] = {}
+    for wall_id in svc.fan_walls:
         if wall_id in per_wall:
-            target = per_wall[wall_id]
+            targets[wall_id] = int(per_wall[wall_id])
         elif request.pwm_percent is not None:
-            target = request.pwm_percent
-        else:
-            # Not covered by this request — leave untouched
-            continue
+            targets[wall_id] = int(request.pwm_percent)
 
-        # Skip walls with no hardware assignment — nothing to drive
-        if wall.powerboard_id is None or wall.header_index is None:
-            skipped.append({"wall": wall.name, "reason": "no hardware assignment"})
-            continue
+    try:
+        # 0-100 accepted with no expiry (user decision); a client that engages 0 and never releases leaves
+        # those fans stopped. override_active in GET /api/v1/fans/status makes this observable.
+        result = await svc.engage_override(targets)
+    except FanOverrideError as e:
+        raise HTTPException(status_code=502, detail=f"{e}; changes rolled back")
 
-        wall.manual = True
-        wall.current_speed = target
-        applied[wall.name] = target
-
-        pb = pb_dict.get(wall.powerboard_id)
-        if pb is not None:
-            if wall.powerboard_id not in pb_updates:
-                pb_updates[wall.powerboard_id] = {"pb": pb, "speeds": list(pb.get_running_fan_pwm())}
-            pb_updates[wall.powerboard_id]["speeds"][wall.header_index] = target
-
-    for entry in pb_updates.values():
-        pb_obj = entry["pb"]
-        speeds = entry["speeds"]
-        pb_obj.set_running_fan_pwm(*speeds)
-        await run.io_bound(pb_obj.update_fan_speed, *speeds)
-
-    return {
-        "override_active": True,
-        "applied": applied,
-        "skipped": skipped,
-        "snapshot_taken": was_new,
-    }
+    return {"override_active": svc.is_override_active(), **result}

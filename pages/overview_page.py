@@ -194,8 +194,14 @@ class RPMCard(ui.element):
 class WattageCard(ui.element):
     """Displays wattage for the fan wall assigned to this grid position."""
 
-    # Physical wattage section per header index (board-level, not remappable per header)
-    _WATT_ATTRS = ['watt_sec_1_2', 'watt_sec_3_4', 'watt_sec_1_2', 'watt_sec_3_4']
+    # Default wattage source per grid position: (powerboard location, wattage attribute)
+    # Wattage shunt sections are sensed per board independent of fan header wiring; positions 2-3 map to board 2 sections.
+    _DEFAULT_WATT_SOURCE = {
+        0: (1, 'watt_sec_1_2'),
+        1: (1, 'watt_sec_3_4'),
+        2: (2, 'watt_sec_1_2'),
+        3: (2, 'watt_sec_3_4'),
+    }
 
     def __init__(self, index, grid_position: str) -> None:
         super().__init__('div')
@@ -209,12 +215,9 @@ class WattageCard(ui.element):
                 pb = next((p for p in globals.powerboardDict.values() if p.location == wall.watt_powerboard_id), None)
                 watt_attr = wall.watt_attr
             else:
-                # Priority 2: derive from fan wall assignment
-                pb = next((p for p in globals.powerboardDict.values() if p.location == wall.powerboard_id), None) if wall and wall.powerboard_id is not None else None
-                # Priority 3: fall back to pb1
-                if pb is None:
-                    pb = next((p for p in globals.powerboardDict.values() if p.location == 1), None)
-                watt_attr = self._WATT_ATTRS[min(wall.header_index, len(self._WATT_ATTRS) - 1)] if wall and wall.header_index is not None else self._WATT_ATTRS[min(index, len(self._WATT_ATTRS) - 1)]
+                # Priority 2: positional default
+                pb_location, watt_attr = self._DEFAULT_WATT_SOURCE.get(index, (None, None))
+                pb = next((p for p in globals.powerboardDict.values() if p.location == pb_location), None)
 
             if pb:
                 row_label = wall.watt_label if (wall and wall.watt_label) else f'Row {index + 1}'

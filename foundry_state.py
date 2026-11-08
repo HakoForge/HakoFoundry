@@ -489,6 +489,11 @@ class Chassis:
         # Preferences
         self.chassis_orientation = False  # False for normal, True for inverted
         self.units = "C"  # Temperature units: "C" for Celsius, "F" for Fahrenheit
+        # Read-only compatibility input preserved on disk so FanControlService can
+        # re-derive default fan wall assignments on every start for walls that still
+        # lack per-wall powerboard_id/header_index. Ignored once a wall has explicit
+        # assignments. None when layout_config.json has no pb_swap key.
+        self.legacy_pb_swap: Optional[bool] = None
 
         if config_file:
             self._load_config()
@@ -519,6 +524,8 @@ class Chassis:
             else:
                 self.chassis_orientation = bool(orientation_value)
             self.units = options.get("units", "C")
+            if "pb_swap" in options:
+                self.legacy_pb_swap = bool(options["pb_swap"])
 
             # Ensure we have the right number of backplane slots
             while len(backplanes_data) < self.MAX_BACKPLANES:
@@ -584,6 +591,10 @@ class Chassis:
     def get_units(self) -> str:
         """Get temperature units."""
         return self.units
+
+    def get_legacy_pb_swap(self) -> bool:
+        """Return the legacy pb_swap flag (False when absent from layout_config.json)."""
+        return bool(self.legacy_pb_swap)
 
     def chassis_is_inverted(self) -> bool:
         """Get chassis orientation setting. Returns True if inverted, False if normal."""
@@ -684,6 +695,10 @@ class Chassis:
                         "units": self.units
                     }
             }
+            # Written back unchanged (never deleted) so the migration stays re-derivable until
+            # fan_control_config.json holds explicit assignments for every wall.
+            if self.legacy_pb_swap is not None:
+                config_data["options"]["pb_swap"] = self.legacy_pb_swap
 
             # Ensure config directory exists
             config_path = Path(self.config_file)

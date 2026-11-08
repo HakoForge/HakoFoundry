@@ -108,8 +108,17 @@ def settingsPage():
                         pb_speeds[pb_location] = {'pb': pb_obj, 'speeds': list(pb_obj.get_saved_fan_pwm())}
                     pb_speeds[pb_location]['speeds'][header_index] = int(slider.value)
 
-                for entry in pb_speeds.values():
-                    await run.io_bound(entry['pb'].set_fan_speed, *entry['speeds'])
+                for pb_location, entry in pb_speeds.items():
+                    speeds = entry['speeds']
+                    await run.io_bound(entry['pb'].set_fan_speed, *speeds)
+                    entry['pb'].set_running_fan_pwm(*speeds)
+                    for header_index, speed in enumerate(speeds):
+                        wall = wall_by_assignment.get((pb_location, header_index))
+                        if wall is not None:
+                            wall.current_speed = speed
+
+                if svc is not None:
+                    svc.save_config_immediate()
 
                 ui.notify("PWM settings applied successfully!",
                          position='bottom-right', type='positive', group=False)
@@ -164,7 +173,13 @@ def settingsPage():
             return ui.label('No fan walls initialized.').classes('text-gray-500 italic')
 
         svc = globals.fan_control_service
+        if svc.config_load_error:
+            ui.label(svc.config_load_error).classes('text-red-500 text-sm mb-2')
         pb_options = {pb.location: f'Powerboard {pb.location}' for pb in sorted(globals.powerboardDict.values(), key=lambda p: p.location)}
+        for wall in svc.fan_walls.values():
+            if wall.powerboard_id is not None and wall.powerboard_id not in pb_options:
+                # A configured board that is offline must stay in the options or ui.select raises on a value not in options.
+                pb_options[wall.powerboard_id] = f'Powerboard {wall.powerboard_id} (disconnected)'
         header_options = {0: 'Row 1', 1: 'Row 2', 2: 'Row 3'}
 
         with ui.grid(columns=3).classes('w-full gap-x-4 gap-y-2'):
@@ -188,7 +203,11 @@ def settingsPage():
                     value=wall.header_index,
                 ).classes('w-full')
 
+                # Returns early when the selected pair equals the stored pair, so programmatic select updates do not fire a spurious success toast.
                 def on_change(_, wid=wall_id, pb_sel=pb_select, hdr_sel=header_select):
+                    stored = svc.fan_walls[wid]
+                    if (pb_sel.value, hdr_sel.value) == (stored.powerboard_id, stored.header_index):
+                        return
                     success = svc.set_wall_assignment(wid, pb_sel.value, hdr_sel.value)
                     if not success:
                         # Revert selects to current (unchanged) values

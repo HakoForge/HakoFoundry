@@ -11,8 +11,11 @@ import threading
 import json
 import os
 import logging
-from typing import Dict, List, Optional, Any, Callable, TYPE_CHECKING
+import time
+from typing import Dict, List, Optional, Any, Callable, Tuple, TYPE_CHECKING
 from nicegui import app, ui, run
+
+from powerboard import PowerboardError
 
 # Configure logging
 logger = logging.getLogger("foundry_logger")
@@ -27,6 +30,38 @@ except ImportError:
     # Fallback if interpolate_fan_speed is not available
     def interpolate_fan_speed(curve_data, temperature):
         return None
+
+_WALL_NAMES = {
+    1: "Fan Wall 1",
+    2: "Fan Wall 2",
+    3: "Fan Wall 3",
+    4: "Auxiliary Fan 1",
+    5: "Auxiliary Fan 2",
+    6: "Auxiliary Fan 3",
+}
+
+
+def _as_pwm_int(value) -> int:
+    """Coerce a wall speed to the int 0-100 that Powerboard fan writes require."""
+    return max(0, min(100, int(round(float(value)))))
+
+
+def _default_assignments(legacy_swap: bool) -> Dict[int, Tuple[int, int]]:
+    """Return the default (powerboard_location, header_index) for each wall_id."""
+    # pb_swap=true: walls 1-3 drive the location-2 board and aux wall 4 the location-1 board; false is the reverse.
+    # Walls 5/6 share wall 4's board so every header on that board stays managed (no fan left unmanaged),
+    # since legacy installs wire all three headers of that board to aux fans.
+    main_loc = 2 if legacy_swap else 1
+    aux_loc = 1 if legacy_swap else 2
+    return {
+        1: (main_loc, 0),
+        2: (main_loc, 1),
+        3: (main_loc, 2),
+        4: (aux_loc, 2),
+        5: (aux_loc, 0),
+        6: (aux_loc, 1),
+    }
+
 
 class FanWall:
     """Represents a single fan wall that can be controlled by a fan profile."""
@@ -81,7 +116,13 @@ class FanControlService:
         
         # Configuration file path
         self.config_file_path = "config/fan_control_config.json"
-        
+
+        # Set by _load_config when the config file exists but cannot be read; shown in Settings.
+        self.config_load_error: Optional[str] = None
+        # True when an unreadable config could not be moved aside; _save_config then refuses
+        # to overwrite it so the only copy of the user's settings is never replaced by defaults.
+        self._config_save_blocked: bool = False
+
         # Load configuration on startup
         self._load_config()
         
@@ -90,57 +131,148 @@ class FanControlService:
     
     def _load_config(self):
         """Load fan control configuration from file."""
-        try:
-            if os.path.exists(self.config_file_path):
-                with open(self.config_file_path, 'r') as f:
-                    self.loaded_config = json.load(f)
-                
-                # Load automatic control settings
-                self.automatic_control_enabled = self.loaded_config.get('automatic_control_enabled', False)
-                self.automatic_update_interval = self.loaded_config.get('automatic_update_interval', 2.0)
-                self.fan_wall_service_active = self.loaded_config.get('fan_wall_service_active', False)
-                
-                logger.info("Fan control configuration loaded successfully")
-            else:
-                logger.info("No fan control config file found, creating default config")
-                self.loaded_config = {}
-                # Save default configuration for future use
-                try:
-                    self.save_config_immediate()
-                    logger.info("Default fan control configuration saved to config file")
-                except Exception as e:
-                    logger.error(f"Failed to save default fan control configuration: {e}")
-                
-        except Exception as e:
-            logger.error(f"Error loading fan control config: {e}")
-            logger.info("Using default configuration")
+        if not os.path.exists(self.config_file_path):
+            logger.info("No fan control config file found, creating default config")
             self.loaded_config = {}
-    
+            # Save default configuration for future use
+            if self.save_config_immediate():
+                logger.info("Default fan control configuration saved to config file")
+            else:
+                logger.error("Failed to save default fan control configuration")
+            return
+
+        try:
+            with open(self.config_file_path, 'r') as f:
+                loaded = json.load(f)
+            if not isinstance(loaded, dict):
+                raise ValueError(f"top-level JSON value is {type(loaded).__name__}, expected an object")
+        except (OSError, ValueError) as e:
+            self._quarantine_unreadable_config(e)
+            self.loaded_config = {}
+            return
+
+        self.loaded_config = loaded
+        # Load automatic control settings
+        self.automatic_control_enabled = self.loaded_config.get('automatic_control_enabled', False)
+        self.automatic_update_interval = self.loaded_config.get('automatic_update_interval', 2.0)
+        self.fan_wall_service_active = self.loaded_config.get('fan_wall_service_active', False)
+
+        logger.info("Fan control configuration loaded successfully")
+
+    def _quarantine_unreadable_config(self, error: Exception) -> None:
+        """Move an unreadable config file aside so later default saves cannot overwrite it."""
+        backup_path = f"{self.config_file_path}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}"
+        try:
+            os.replace(self.config_file_path, backup_path)
+        except OSError as move_error:
+            self._config_save_blocked = True
+            self.config_load_error = (
+                f"Fan control config {self.config_file_path} is unreadable ({error}) and could not be "
+                f"moved aside ({move_error}); defaults are in use and settings will not be saved until "
+                f"the file is repaired or removed"
+            )
+        else:
+            self.config_load_error = (
+                f"Fan control config {self.config_file_path} was unreadable ({error}); it was moved to "
+                f"{backup_path} and defaults are in use"
+            )
+        logger.error(self.config_load_error)
+
     def _apply_loaded_config(self):
         """Apply loaded configuration to fan walls after they're initialized."""
-        if not hasattr(self, 'loaded_config') or not self.loaded_config:
-            return
-        
-        # Apply fan wall configurations
-        fan_walls_config = self.loaded_config.get('fan_walls', {})
-        for wall_id_str, wall_config in fan_walls_config.items():
-            wall_id = int(wall_id_str)
-            if wall_id in self.fan_walls:
-                wall = self.fan_walls[wall_id]
-                wall.assigned_profile = wall_config.get('assigned_profile', wall.assigned_profile)
-                wall.manual = wall_config.get('manual', True)
-                wall.powerboard_id = wall_config.get('powerboard_id', wall.powerboard_id)
-                wall.header_index = wall_config.get('header_index', wall.header_index)
-                wall.watt_label = wall_config.get('watt_label', None)
-                wall.watt_powerboard_id = wall_config.get('watt_powerboard_id', None)
-                wall.watt_attr = wall_config.get('watt_attr', None)
-                # Don't override current_speed from powerboard readings
-                logger.info(f"Applied config to {wall.name}: Profile={wall.assigned_profile}, Manual={wall.manual}")
-        
+        loaded = getattr(self, 'loaded_config', None) or {}
+        fan_walls_config = loaded.get('fan_walls') or {}
+
+        wall4_entry = fan_walls_config.get('4')
+        wall4_is_legacy = isinstance(wall4_entry, dict) and 'powerboard_id' not in wall4_entry
+
+        for wall_id in sorted(self.fan_walls):
+            wall = self.fan_walls[wall_id]
+            entry = fan_walls_config.get(str(wall_id))
+            if not isinstance(entry, dict):
+                entry = None
+
+            if entry is None and wall_id in (5, 6) and wall4_is_legacy:
+                wall4 = self.fan_walls[4]
+                wall.manual = wall4_entry.get('manual', True)
+                wall.assigned_profile = wall4_entry.get('assigned_profile', wall.assigned_profile)
+                wall.current_speed = wall4.current_speed
+                self._needs_explicit_save = True
+                logger.info(
+                    f"{wall.name}: legacy default assignment PB location {wall.powerboard_id} "
+                    f"header {wall.header_index}, inherited from {wall4.name}"
+                )
+                continue
+
+            # A wall entry without a powerboard_id key is a pre-upgrade config; those walls keep the derived
+            # legacy defaults. Stored walls re-seed speed from their own header so the first ping-loop write
+            # does not carry the default header's speed onto another header.
+            is_stored = entry is not None and 'powerboard_id' in entry
+            if is_stored:
+                wall.powerboard_id = entry.get('powerboard_id')
+                wall.header_index = entry.get('header_index')
+                self._seed_current_speed(wall)
+            else:
+                self._needs_explicit_save = True
+
+            if entry is not None:
+                wall.assigned_profile = entry.get('assigned_profile', wall.assigned_profile)
+                wall.manual = entry.get('manual', True)
+                wall.watt_label = entry.get('watt_label', None)
+                wall.watt_powerboard_id = entry.get('watt_powerboard_id', None)
+                wall.watt_attr = entry.get('watt_attr', None)
+
+            source = "stored" if is_stored else "legacy default"
+            logger.info(
+                f"{wall.name}: {source} assignment PB location {wall.powerboard_id} header {wall.header_index}, "
+                f"Profile={wall.assigned_profile}, Manual={wall.manual}"
+            )
+
         logger.info("Fan wall configuration applied successfully")
-    
-    def _save_config(self):
-        """Save fan control configuration to file."""
+
+    def _validate_assignments(self) -> int:
+        """Unassign invalid or duplicate (powerboard_id, header_index) pairs. Returns the correction count."""
+        corrections = 0
+        claimed: Dict[Tuple[int, int], int] = {}
+        for wall_id in sorted(self.fan_walls):
+            wall = self.fan_walls[wall_id]
+            pb_id, header = wall.powerboard_id, wall.header_index
+            if pb_id is None and header is None:
+                continue
+
+            pb_valid = isinstance(pb_id, int) and not isinstance(pb_id, bool) and pb_id in (1, 2)
+            header_valid = isinstance(header, int) and not isinstance(header, bool) and header in (0, 1, 2)
+            if not (pb_valid and header_valid):
+                logger.warning(
+                    f"{wall.name}: invalid assignment powerboard_id={pb_id!r} header_index={header!r}; "
+                    f"set to unassigned"
+                )
+                wall.powerboard_id = None
+                wall.header_index = None
+                corrections += 1
+                continue
+
+            # Lowest wall_id keeps a contested header so the winner is deterministic across restarts; the rest become Unassigned in Settings.
+            owner = claimed.get((pb_id, header))
+            if owner is not None:
+                logger.warning(
+                    f"{wall.name}: PB location {pb_id} header {header} already used by "
+                    f"{self.fan_walls[owner].name}; set to unassigned"
+                )
+                wall.powerboard_id = None
+                wall.header_index = None
+                corrections += 1
+                continue
+            claimed[(pb_id, header)] = wall_id
+        return corrections
+
+    def _save_config(self) -> bool:
+        """Save fan control configuration to file atomically. Returns True on success."""
+        if self._config_save_blocked:
+            logger.error(f"Not saving fan control config: {self.config_load_error}")
+            return False
+        # Write to a sibling temp file then os.replace so a crash never leaves a truncated config.
+        tmp_path = self.config_file_path + ".tmp"
         try:
             logger.debug(f"Attempting to save config to: {self.config_file_path}")
             
@@ -174,16 +306,25 @@ class FanControlService:
             
             logger.debug(f"Config data prepared: {len(config['fan_walls'])} fan walls")
             
-            # Write to file
-            with open(self.config_file_path, 'w') as f:
+            # Write to a temp file in the same directory, then os.replace, so a failed write
+            # leaves the previous config intact instead of a truncated file.
+            with open(tmp_path, 'w') as f:
                 json.dump(config, f, indent=4)
-            
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.config_file_path)
+
             logger.info("Fan control configuration saved successfully")
-            
+            return True
+
         except Exception as e:
-            logger.error(f"Error saving fan control config: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Error saving fan control config to {self.config_file_path}: {e}", exc_info=True)
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError as cleanup_error:
+                logger.error(f"Could not remove temporary fan control config {tmp_path}: {cleanup_error}")
+            return False
     
     def save_config_delayed(self, delay: float = 0.5):
         """Save configuration with a delay to batch multiple rapid changes."""
@@ -201,8 +342,8 @@ class FanControlService:
             
         self._save_timer = ui.timer(delay, save_and_clear, once=True)
     
-    def save_config_immediate(self):
-        """Save configuration immediately without delay."""
+    def save_config_immediate(self) -> bool:
+        """Save configuration immediately without delay. Returns True on success."""
         # Cancel any pending delayed save
         if hasattr(self, '_save_timer') and self._save_timer:
             try:
@@ -212,7 +353,7 @@ class FanControlService:
             self._save_timer = None
         
         # Save immediately
-        self._save_config()
+        return self._save_config()
     
     def test_save_config(self):
         """Test method to manually trigger config save for debugging."""
@@ -229,7 +370,7 @@ class FanControlService:
         running = pb_obj.get_running_fan_pwm()
         for wall in self.fan_walls.values():
             if wall.powerboard_id == pb_obj.location and wall.header_index is not None:
-                if wall.current_speed != running[wall.header_index]:
+                if _as_pwm_int(wall.current_speed) != running[wall.header_index]:
                     return False
         return True
     def update_powerboard_fan_speed(self, pb) -> None:
@@ -241,7 +382,7 @@ class FanControlService:
         speeds = list(pb_obj.get_running_fan_pwm())
         for wall in self.fan_walls.values():
             if wall.powerboard_id == pb_obj.location and wall.header_index is not None:
-                speeds[wall.header_index] = wall.current_speed
+                speeds[wall.header_index] = _as_pwm_int(wall.current_speed)
         pb_obj.update_fan_speed(*speeds)
 
     def _pb_for_location(self, location: Optional[int]):
@@ -254,63 +395,68 @@ class FanControlService:
                 return pb
         return None
 
+    def _seed_current_speed(self, wall: FanWall) -> None:
+        """Seed wall.current_speed from its assigned board's running PWM when that board is connected."""
+        if wall.header_index not in (0, 1, 2):
+            return
+        pb_obj = self._pb_for_location(wall.powerboard_id)
+        if pb_obj is not None:
+            wall.current_speed = pb_obj.get_running_fan_pwm()[wall.header_index]
+
     def _initialize_fan_walls(self):
-        """Initialize fan walls based on powerboard availability."""
+        """Create all six fan walls, apply stored config, and persist migrated assignments."""
         import globals  # Import here to avoid circular import
         fan_profiles = self.get_fan_profile_options()
         default_profile = fan_profiles[0] if fan_profiles else None
-        
-        # Initialize main fan walls if powerboard 1 is available
-        if 1 in globals.powerboardDict:
-            pb1 = globals.powerboardDict[1]
-            pb1_queued_fan_speed = pb1.get_running_fan_pwm()
-            for i in range(1, 4):
-                wall_name = f"Fan Wall {i}"
-                self.fan_walls[i] = FanWall(i, wall_name, default_profile, powerboard_id=pb1.location, header_index=i - 1)
-                self.fan_walls[i].set_service_reference(self)
-                self.fan_walls[i].current_speed = pb1_queued_fan_speed[i - 1]
-                logger.info(f"Initialized {wall_name}")
-            app.timer(3.0, self.ping_powerboards)
 
-        # Always initialize Auxiliary Fan 1; assign to powerboard 2 if available
-        self.fan_walls[4] = FanWall(4, "Auxiliary Fan 1", default_profile)
-        self.fan_walls[4].set_service_reference(self)
-        if 2 in globals.powerboardDict:
-            pb2 = globals.powerboardDict[2]
-            pb2_queued_fan_speed = pb2.get_running_fan_pwm()
-            self.fan_walls[4].powerboard_id = pb2.location
-            self.fan_walls[4].header_index = 2
-            self.fan_walls[4].current_speed = pb2_queued_fan_speed[2]
-            logger.info("Initialized Auxiliary Fan 1 (assigned to PB2)")
-        else:
-            logger.info("Initialized Auxiliary Fan 1 (unassigned)")
+        legacy_swap = globals.layoutState.get_legacy_pb_swap() if globals.layoutState else False
+        for wall_id, (pb_location, header_index) in _default_assignments(legacy_swap).items():
+            wall = FanWall(wall_id, _WALL_NAMES[wall_id], default_profile,
+                           powerboard_id=pb_location, header_index=header_index)
+            wall.set_service_reference(self)
+            self._seed_current_speed(wall)
+            self.fan_walls[wall_id] = wall
+            logger.info(f"Initialized {wall.name} (default PB location {pb_location} header {header_index})")
 
-        # Initialize unassigned auxiliary fans 2 and 3
-        for zone_id, zone_name in [(5, "Auxiliary Fan 2"), (6, "Auxiliary Fan 3")]:
-            self.fan_walls[zone_id] = FanWall(zone_id, zone_name, default_profile)
-            self.fan_walls[zone_id].set_service_reference(self)
-            logger.info(f"Initialized {zone_name} (unassigned)")
-
-        # Apply loaded configuration after wall initialization
+        # Migration is idempotent: pb_swap stays in layout_config.json, so a failed save here is retried
+        # on the next start with the same derived mapping. Explicit stored assignments win over pb_swap.
+        self._needs_explicit_save = legacy_swap
         self._apply_loaded_config()
-    
-    async def ping_powerboards(self) -> None:
+        self._validate_assignments()
 
-        """Update variables from powerboards."""
+        if self._needs_explicit_save:
+            if self.save_config_immediate():
+                logger.info(f"fan wall assignments persisted explicitly (legacy_pb_swap={legacy_swap})")
+            else:
+                logger.error(
+                    "legacy fan wall assignments could not be persisted; pb_swap is retained in "
+                    "layout_config.json and migration will be retried on next start"
+                )
+
+        # Timer registers when any board exists; a PB2-only host must still be polled and driven.
+        if globals.powerboardDict:
+            self._start_ping_timer()
+
+    def _start_ping_timer(self) -> None:
+        """Register the 3 s powerboard control loop."""
+        app.timer(3.0, self.ping_powerboards)
+
+    async def ping_powerboards(self) -> None:
+        """Poll every connected powerboard and push wall speeds that differ from hardware."""
         import globals
 
-        if 1 in globals.powerboardDict:
-            # Update powerboard state for rpm and wattage
-            await run.io_bound(globals.powerboardDict[1].update_powerboard_state)
-            # Update queued fan speed if it has changed
-            if not self.fan_speed_current(1):
-                self.update_powerboard_fan_speed(1)
+        # Each board is isolated so one PowerboardError cannot stop the other board; serial I/O runs off
+        # the event loop because it blocks the UI.
+        for pb_key in sorted(globals.powerboardDict):
+            pb_obj = globals.powerboardDict[pb_key]
+            try:
+                await run.io_bound(pb_obj.update_powerboard_state)
+                if not self.fan_speed_current(pb_key):
+                    await run.io_bound(self.update_powerboard_fan_speed, pb_key)
+            except Exception as e:
+                logger.error(f"ping_powerboards: board {pb_obj.location} failed: {e}")
 
-        if 2 in globals.powerboardDict:
-            await run.io_bound(globals.powerboardDict[2].update_powerboard_state)
-            if not self.fan_speed_current(2):
-                self.update_powerboard_fan_speed(2)
-            
+        # Only profile-driven walls are recomputed; overridden walls are manual=True so the loop leaves them alone.
         for fan_wall in self.fan_walls.values():
             if not fan_wall.manual:
                 fan_wall.current_speed = self._update_single_fan_wall(fan_wall.wall_id)
@@ -590,19 +736,19 @@ class FanControlService:
                         continue
                     if loc not in pb_speeds:
                         pb_speeds[loc] = {'pb': pb_obj, 'speeds': list(pb_obj.get_running_fan_pwm())}
-                    pb_speeds[loc]['speeds'][wall.header_index] = slider_list[slider_idx].value
+                    pb_speeds[loc]['speeds'][wall.header_index] = _as_pwm_int(slider_list[slider_idx].value)
 
                 for loc, entry in pb_speeds.items():
                     pb_obj = entry['pb']
                     speeds = entry['speeds']
                     await run.io_bound(pb_obj.semaphore.acquire)
                     pb_obj.semaphore.release()
-                    pb_obj.set_running_fan_pwm(*speeds)
+                    # update_fan_speed refreshes the running cache only on success, so a failed write stays visible to the ping loop.
+                    await run.io_bound(pb_obj.update_fan_speed, *speeds)
                     ui.notify(
                         f"PWM updated {speeds[0]}, {speeds[1]}, {speeds[2]}",
                         position='bottom-right', type='positive', group=False
                     )
-                    await run.io_bound(pb_obj.update_fan_speed, *speeds)
             except Exception as e:
                 logger.error(f"Error updating fan speed: {e}")
                 ui.notify("Fan speed update failed", position='bottom-right', type='negative', group=False)
@@ -628,51 +774,59 @@ class FanControlService:
                 await run.io_bound(pb_obj.semaphore.acquire)
                 pb_obj.semaphore.release()
 
-                aux_pwm = self.get_auxiliary_slider_value(slider_list)
+                aux_pwm = _as_pwm_int(self.get_auxiliary_slider_value(slider_list))
                 speeds = list(pb_obj.get_running_fan_pwm())
                 speeds[wall.header_index] = aux_pwm
 
+                await run.io_bound(pb_obj.update_fan_speed, *speeds)
                 ui.notify(
                     f"Auxiliary PWM updated {aux_pwm}",
                     position='bottom-right', type='positive', group=False
                 )
-                await run.io_bound(pb_obj.update_fan_speed, *speeds)
             except Exception as e:
                 logger.error(f"Error updating auxiliary fan speed: {e}")
                 ui.notify("Auxiliary fan speed update failed", position='bottom-right', type='negative', group=False)
             finally:
                 self.update_aux_pwm_semaphore.release()
 
-    async def set_fan_speed(self, row1, row2, row3, aux=100):
-        """Set and save fan speed for both powerboards."""
-        import globals
-        
-        # Set powerboard 1 fan speeds
-        if 1 in globals.powerboardDict:
-            pb1 = globals.powerboardDict[1]
-            pb1.set_saved_fan_pwm(row1, row2, row3)
+    # Same wall-assignment traversal as request_update_fan_speed so Set writes saved+running values to the assigned board and header.
+    async def set_fan_speed(self, slider_list: List):
+        """Write every assigned wall's slider value to its powerboard's EEPROM."""
+        wall_slider_map = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5}
+        pb_speeds: Dict[int, dict] = {}
+        for wall_id, slider_idx in wall_slider_map.items():
+            wall = self.fan_walls.get(wall_id)
+            if not wall or wall.powerboard_id is None or wall.header_index is None:
+                continue
+            if slider_idx >= len(slider_list) or slider_list[slider_idx] is None:
+                continue
+            pb_obj = self._pb_for_location(wall.powerboard_id)
+            if pb_obj is None:
+                continue
+            loc = wall.powerboard_id
+            if loc not in pb_speeds:
+                pb_speeds[loc] = {'pb': pb_obj, 'speeds': list(pb_obj.get_saved_fan_pwm()), 'walls': []}
+            pb_speeds[loc]['speeds'][wall.header_index] = _as_pwm_int(slider_list[slider_idx].value)
+            pb_speeds[loc]['walls'].append(wall)
 
-            await run.io_bound(
-                globals.powerboardDict[1].set_fan_speed, 
-                row1, 
-                row2, 
-                row3
-            )
-            pb1.set_running_fan_pwm(row1, row2, row3)
-        # Set powerboard 2 fan speeds if it exists and has a slider value
-        if 2 in globals.powerboardDict:
-            pb2 = globals.powerboardDict[2]
-            
-            pb2.set_saved_fan_pwm(aux, aux, aux)
-            
-            await run.io_bound(
-                pb2.set_fan_speed,
-                aux,
-                aux,
-                aux
-            )
-            pb2.set_running_fan_pwm(aux, aux, aux)
-        ui.notify("PWM set.", position='bottom-right', type='positive', group=False)
+        failed = False
+        for loc, entry in pb_speeds.items():
+            pb_obj = entry['pb']
+            speeds = entry['speeds']
+            try:
+                await run.io_bound(pb_obj.set_fan_speed, *speeds)
+                pb_obj.set_running_fan_pwm(*speeds)
+                for wall in entry['walls']:
+                    wall.current_speed = speeds[wall.header_index]
+            except (PowerboardError, ValueError) as e:
+                failed = True
+                logger.error(f"Saving fan speed to powerboard {loc} failed: {e}")
+                ui.notify(f"Saving PWM to powerboard {loc} failed: {e}",
+                          position='bottom-right', type='negative', group=False)
+
+        self.save_config_immediate()
+        if not failed:
+            ui.notify("PWM set.", position='bottom-right', type='positive', group=False)
 
     async def dialog_handler_discard(self, slider_list: List,
                                    update_fan_speed_callback: Callable,

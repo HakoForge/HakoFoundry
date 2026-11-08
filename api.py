@@ -5,7 +5,7 @@ Exposes powerboard metrics over HTTP with API key authentication.
 Keys are managed via Settings > API Keys and stored in config/api_config.json.
 
 Endpoints:
-  GET  /api/v1/status                    — service health and connected powerboard count
+  GET  /api/v1/status                    — service health, app version and connected powerboard count
   GET  /api/v1/powerboards               — metrics for all connected powerboards
   GET  /api/v1/powerboards/{location}    — metrics for a single powerboard (1 or 2)
   GET  /api/v1/fans/status               — PWM, RPM, and override state for all fan walls
@@ -26,6 +26,7 @@ import globals
 from api_key_manager import api_key_manager
 from fan_control_service import FanOverrideError
 from powerboard import PowerboardError
+from version import get_version_info
 
 # Wall ID aliases for auxiliary fan walls
 _WALL_ALIAS = {"aux1": 4, "aux2": 5, "aux3": 6}
@@ -128,6 +129,7 @@ async def api_status(_: None = Depends(_require_api_key)):
     pb_dict = globals.powerboardDict or {}
     return {
         "status": "ok",
+        **get_version_info(),
         "powerboards_connected": len(pb_dict),
         "powerboard_locations": sorted(pb_dict.keys()),
     }

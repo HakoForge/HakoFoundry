@@ -10,6 +10,8 @@ import time
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
+from version import get_version_info
+
 
 CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
 
@@ -208,6 +210,8 @@ def generate_metrics() -> str:
     lines: List[str] = []
     _append_family(lines, "hako_foundry_scrape_timestamp_seconds", "Unix timestamp when Hako Foundry generated the metrics scrape.")
     _append_metric(lines, "hako_foundry_scrape_timestamp_seconds", time.time())
+    _append_family(lines, "hako_foundry_build_info", "Hako Foundry version and git revision; the value is always 1.")
+    _append_metric(lines, "hako_foundry_build_info", 1, **get_version_info())
 
     families = [
         ("hako_foundry_temperature_celsius", "Cached hardware temperature sensor readings in Celsius."),

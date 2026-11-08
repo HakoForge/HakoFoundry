@@ -24,12 +24,14 @@ curl -H "X-API-Key: hf-api_your-key-here" http://localhost:8080/api/v1/status
 
 #### `GET /api/v1/status`
 
-Returns service health and the number of connected powerboards.
+Returns service health, the running app version and the number of connected powerboards.
 
 **Response**
 ```json
 {
   "status": "ok",
+  "version": "0.8",
+  "revision": "1efa593c2b7d4e8f9a0b1c2d3e4f5a6b7c8d9e0f",
   "powerboards_connected": 2,
   "powerboard_locations": [1, 2]
 }

@@ -112,7 +112,9 @@ Hako Foundry exposes Prometheus metrics on the same web port at:
 http://<host>:<port>/metrics
 ```
 
-The endpoint reports the app's cached readings, so scrapes do not wake sleeping drives or query the powerboard serial connection directly. Exported metrics include hardware temperatures, drive temperatures, drive power cycles, fan RPM, fan PWM percentages, fan wall targets, and power draw.
+The endpoint reports the app's cached readings, so scrapes do not wake sleeping drives or query the powerboard serial connection directly. Exported metrics include hardware temperatures, drive temperatures, drive power cycles, fan RPM, fan PWM percentages, fan wall targets, and power draw. `hako_foundry_build_info` carries the running version and git revision as labels.
+
+The running version is also shown under the logo in the side menu and returned by `/api/v1/status`. Docker images get it from the `APP_VERSION` and `APP_REVISION` build args, which CI sets from the image tag and commit; a local run from a git checkout uses `git describe`.
 
 `/metrics` does not require authentication, matching standard Prometheus scrape setups. Drive metrics include a `serial` label, so restrict network access to the endpoint if drive serial numbers should not be visible.
 

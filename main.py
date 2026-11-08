@@ -4,6 +4,7 @@ import authentication
 import globals
 import os
 import hashlib
+import prometheus_metrics
 from nicegui import ui
 
 @ui.page('/')
@@ -26,6 +27,7 @@ def login_page() -> None:
     authentication.create_login_page()
 
 all_pages.create()
+prometheus_metrics.register_metrics_endpoint()
 
 # Initializing things that only run once.
 if __name__ == '__mp_main__':

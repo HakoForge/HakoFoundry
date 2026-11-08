@@ -992,72 +992,46 @@ class FanControlService:
         if not failed:
             ui.notify("PWM set.", position='bottom-right', type='positive', group=False)
 
-    async def dialog_handler_discard(self, slider_list: List,
-                                   update_fan_speed_callback: Callable,
-                                   update_aux_fan_speed_callback: Callable):
-        """Handle discarding fan speed changes, restoring saved values from each wall's assigned PB."""
-        import globals
+    def _unsaved_manual_walls(self, slider_list: List):
+        """Yield (wall, slider, saved_pwm) for each manual wall whose slider and assigned board are present.
 
-        # Reset main fan walls 1/2/3
-        for wall_id, slider_idx in ((1, 0), (2, 1), (3, 2)):
-            wall = self.fan_walls.get(wall_id)
-            if not wall or wall.powerboard_id is None or wall.header_index is None:
+        Profile-driven walls change speed constantly and API-overridden walls hold temporary speeds,
+        so neither is treated as an unsaved edit.
+        """
+        for wall_id, wall in sorted(self.fan_walls.items()):
+            slider_idx = wall_id - 1
+            if not wall.manual or self.is_wall_overridden(wall_id):
+                continue
+            if wall.powerboard_id is None or wall.header_index is None:
+                continue
+            if slider_idx >= len(slider_list) or slider_list[slider_idx] is None:
                 continue
             pb_obj = self._pb_for_location(wall.powerboard_id)
             if pb_obj is None:
                 continue
-            if slider_idx >= len(slider_list) or slider_list[slider_idx] is None:
-                continue
-            saved = pb_obj.get_saved_fan_pwm()
-            self.set_slider_value_without_callback(slider_list[slider_idx], saved[wall.header_index])
+            yield wall, slider_list[slider_idx], pb_obj.get_saved_fan_pwm()[wall.header_index]
 
-        await update_fan_speed_callback()
+    async def dialog_handler_discard(self, slider_list: List):
+        """Return manual walls to their board's saved (EEPROM) speeds.
 
-        # Reset aux wall 4
-        wall4 = self.fan_walls.get(4)
-        pb4 = self._pb_for_location(wall4.powerboard_id) if (wall4 and wall4.powerboard_id is not None) else None
-        if (pb4 and wall4.header_index is not None
-                and len(slider_list) > 3 and slider_list[3] is not None):
-            saved4 = pb4.get_saved_fan_pwm()
-            self.set_slider_value_without_callback(slider_list[3], saved4[wall4.header_index])
-            await update_aux_fan_speed_callback()
-
-        # Restore running PWM on each PB to its saved values
-        for pb_id, pb in globals.powerboardDict.items():
-            saved = pb.get_saved_fan_pwm()
-            pb.set_running_fan_pwm(*saved)
-
+        Only wall speeds change here; the ping loop writes the hardware and refreshes the running
+        cache after a successful write, so a failed write is retried rather than hidden.
+        """
+        for wall, slider, saved in self._unsaved_manual_walls(slider_list):
+            wall.current_speed = _as_pwm_int(saved)
+            self.set_slider_value_without_callback(slider, wall.current_speed)
+        self.save_config_immediate()
         ui.notify(
             "Fan speeds reset to saved values",
             position='bottom-right', type='positive', group=False
         )
 
     def check_for_changes(self, slider_list: List) -> bool:
-        """Check if current slider values differ from saved powerboard values."""
-        import globals
-
-        for wall_id, slider_idx in ((1, 0), (2, 1), (3, 2)):
-            wall = self.fan_walls.get(wall_id)
-            if not wall or wall.powerboard_id is None or wall.header_index is None:
-                continue
-            pb_obj = self._pb_for_location(wall.powerboard_id)
-            if pb_obj is None:
-                continue
-            if slider_idx >= len(slider_list) or slider_list[slider_idx] is None:
-                continue
-            saved = pb_obj.get_saved_fan_pwm()
-            if slider_list[slider_idx].value != saved[wall.header_index]:
-                return True
-
-        wall4 = self.fan_walls.get(4)
-        pb4 = self._pb_for_location(wall4.powerboard_id) if (wall4 and wall4.powerboard_id is not None) else None
-        if (pb4 and wall4.header_index is not None
-                and len(slider_list) > 3 and slider_list[3] is not None):
-            saved4 = pb4.get_saved_fan_pwm()
-            if slider_list[3].value != saved4[wall4.header_index]:
-                return True
-
-        return False
+        """True when any manual wall's slider differs from its board's saved (EEPROM) speed."""
+        return any(
+            _as_pwm_int(slider.value) != _as_pwm_int(saved)
+            for _, slider, saved in self._unsaved_manual_walls(slider_list)
+        )
 
     def get_saved_pwm_values(self) -> tuple:
         """Get saved PWM values from each wall's assigned powerboard/header."""

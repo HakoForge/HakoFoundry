@@ -615,11 +615,14 @@ class SystemOverview:
 
     async def dialog_handler_discard(self):
         """Handle discarding fan speed changes for both powerboards."""
-        await self.fan_control_service.dialog_handler_discard(
-            self.slider_list,
-            self.request_update_fan_speed,
-            self.request_update_auxiliary_fan_speed
-        )
+        await self.fan_control_service.dialog_handler_discard(self.slider_list)
+
+    async def confirm_unsaved_fan_changes(self) -> bool:
+        """Ask Apply/Discard when a manual slider differs from its saved speed; False if the prompt is dismissed."""
+        if not self.fan_control_service.check_for_changes(self.slider_list):
+            return True
+        self.fan_change_dialog.open()
+        return await self.fan_change_dialog is not None
 
     async def select_fans(self, button):
         """Handle fan selection and drawer display."""
@@ -628,6 +631,8 @@ class SystemOverview:
             self.right_drawer.show()
             self.last_button = button
         elif self.last_button in self.fan_buttons_list:  # Fan button clicked
+            if not await self.confirm_unsaved_fan_changes():
+                return
             await self.toggle_fan_buttons()
             self.right_drawer.hide()
             self.last_button = None
@@ -826,6 +831,8 @@ class SystemOverview:
             self.right_drawer.show()
             self.last_button = button
         elif self.last_button in self.fan_buttons_list:  # Last click was fans
+            if not await self.confirm_unsaved_fan_changes():
+                return
             await self.toggle_fan_buttons()
             self.toggle_drive_buttons(button)
             self.last_button = button

@@ -34,6 +34,7 @@ Credential input will be done on first visit.
 ```bash
 sudo docker run -d \
   --pull always \
+  --restart unless-stopped \
   $(ls /dev/ttyACM* | sed 's/^/--device /') \
   $(lsblk -d -n -o NAME | grep '^sd' | sed 's|^|--device /dev/|') \
   --cap-add SYS_RAWIO \
@@ -49,6 +50,7 @@ sudo docker run -d \
 ```bash
 sudo docker run -d \
   --pull always \
+  --restart unless-stopped \
   $(ls /dev/ttyACM* | sed 's/^/--device /') \
   $(lsblk -d -n -o NAME | grep '^sd' | sed 's|^|--device /dev/|') \
   --cap-add SYS_RAWIO \
@@ -61,6 +63,9 @@ sudo docker run -d \
   hakoforge/hako-foundry
 ```
 
+If `SECRET` is not provided, the app generates a random secret once and stores it in the config volume as `config/storage_secret`, so sessions survive restarts; set `SECRET` explicitly to control it.
+
+The generated file is created with owner-only permissions (0600); delete it to rotate the secret and invalidate existing sessions. An empty `SECRET` is treated as set.
 
 ## Docker Compose
 
@@ -123,6 +128,7 @@ The endpoint reports the app's cached readings, so scrapes do not wake sleeping 
 - **Persistent Storage**: `-v foundry_config:/app/config/` - Creates a Docker volume to preserve configuration between restarts
 - **Hardware Temp Sensors**: `-v /sys/class/thermal:/sys/class/thermal:ro -v /sys/class/hwmon:/sys/class/hwmon:ro`  - Gives acces to the hardware sensor directory for fan curves
 - **Port Mapping**: `-p 8080:8080` - Maps host port to container port (host:container)
+- **Automatic Restart**: `--restart unless-stopped` - Starts the container again after a reboot or Docker restart, unless you stopped it yourself. To add it to an existing container: `sudo docker update --restart unless-stopped <container>`
 - **Running in the Background**: `-d` - Runs the container in detached mode so it doesn't stop when the shell stops. Alternatively, you can use `tmux` or `screen`
 
 ## Roadmap

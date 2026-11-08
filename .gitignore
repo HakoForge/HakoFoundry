@@ -122,6 +122,8 @@ dmypy.json
 
 #Configs
 config/*.json
+config/storage_secret
+config/storage_secret.tmp
 
 #NiceGUI
 .nicegui

@@ -1,4 +1,5 @@
 import all_pages
+import api  # noqa: F401 – registers API routes with the NiceGUI/FastAPI app
 import authentication
 import globals
 import os

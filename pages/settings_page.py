@@ -1,7 +1,11 @@
+import json
+import time
+
 from nicegui import ui
 from authentication import require_auth
 import globals
 import page_layout
+from api_key_manager import api_key_manager
 
 @require_auth
 def settingsPage():
@@ -250,6 +254,96 @@ def settingsPage():
                     on_click=apply_pwm_settings
                 ).classes('border-solid border-2 border-[#ffdd00] text-white px-6 py-2').props('flat')
 
+    def create_api_keys_section():
+        """Create API key management UI."""
+        state = {'pending_delete_id': None, 'generated_key': ''}
+
+        @ui.refreshable
+        def api_keys_list():
+            keys = api_key_manager.list_keys()
+            if not keys:
+                ui.label('No API keys configured.').classes('text-gray-500 italic text-sm')
+                return
+            with ui.column().classes('w-full gap-2'):
+                for key in keys:
+                    created = time.strftime('%Y-%m-%d', time.localtime(key['created_at']))
+                    with ui.row().classes('w-full items-center justify-between'):
+                        with ui.column().classes('gap-0'):
+                            ui.label(key['name']).classes('font-medium text-sm')
+                            ui.label(f"{key['prefix']}...  •  Created {created}").classes('text-xs text-gray-500 font-mono')
+                        ui.button(
+                            icon='delete',
+                            on_click=lambda _, kid=key['id'], kname=key['name']: open_delete_dialog(kid, kname)
+                        ).props('flat color=red dense')
+
+        with ui.dialog().props('persistent') as create_dialog, ui.card().classes('p-6 min-w-80'):
+            ui.label('Generate New API Key').classes('text-lg font-bold mb-4')
+            name_input = ui.input('Key Name', placeholder='e.g. Home Assistant').classes('w-full mb-2')
+            create_error = ui.label('').classes('text-red-500 text-sm mb-2')
+            create_error.visible = False
+
+            def do_create():
+                name = name_input.value.strip()
+                if not name:
+                    create_error.text = 'Key name is required'
+                    create_error.visible = True
+                    return
+                state['generated_key'] = api_key_manager.create_key(name)
+                name_input.value = ''
+                create_error.visible = False
+                create_dialog.close()
+                key_display_label.set_text(state['generated_key'])
+                show_key_dialog.open()
+                api_keys_list.refresh()
+
+            def cancel_create():
+                name_input.value = ''
+                create_error.visible = False
+                create_dialog.close()
+
+            with ui.row().classes('w-full justify-end gap-2 mt-2'):
+                ui.button('Cancel', on_click=cancel_create).props('flat color=white')
+                ui.button('Generate', on_click=do_create).classes('border-solid border-2 border-[#ffdd00]').props('flat color=white')
+
+        with ui.dialog().props('persistent') as show_key_dialog, ui.card().classes('p-6 min-w-96'):
+            ui.label('API Key Generated').classes('text-lg font-bold mb-2')
+            ui.label('Copy this key now — it will not be shown again.').classes('text-sm text-amber-400 mb-4')
+            key_display_label = ui.label('').classes('font-mono text-sm bg-gray-800 p-3 rounded w-full break-all select-all')
+
+            async def copy_key():
+                await ui.run_javascript(f'navigator.clipboard.writeText({json.dumps(state["generated_key"])})')
+                ui.notify('Key copied to clipboard', position='bottom-right', type='positive', group=False)
+
+            with ui.row().classes('w-full justify-end gap-2 mt-4'):
+                ui.button('Copy', icon='content_copy', on_click=copy_key).classes('border-solid border-2 border-[#ffdd00]').props('flat color=white')
+                ui.button('Done', on_click=show_key_dialog.close).props('flat color=white')
+
+        with ui.dialog().props('persistent') as delete_dialog, ui.card().classes('p-6'):
+            ui.label('Delete API Key?').classes('text-lg font-bold mb-2')
+            delete_name_label = ui.label('').classes('text-sm text-gray-400 mb-2')
+            ui.label('This immediately invalidates the key.').classes('text-sm text-gray-500 mb-4')
+
+            def do_delete():
+                if state['pending_delete_id']:
+                    api_key_manager.delete_key(state['pending_delete_id'])
+                    state['pending_delete_id'] = None
+                    delete_dialog.close()
+                    api_keys_list.refresh()
+                    ui.notify('API key deleted', position='bottom-right', type='positive', group=False)
+
+            with ui.row().classes('w-full justify-end gap-2'):
+                ui.button('Cancel', on_click=delete_dialog.close).props('flat color=white')
+                ui.button('Delete', on_click=do_delete).classes('border-solid border-2 border-red-500').props('flat color=red')
+
+        def open_delete_dialog(key_id: str, key_name: str):
+            state['pending_delete_id'] = key_id
+            delete_name_label.set_text(f'Key: {key_name}')
+            delete_dialog.open()
+
+        api_keys_list()
+        with ui.row().classes('w-full mt-4'):
+            ui.button('Generate New API Key', icon='add', on_click=create_dialog.open).classes('border-solid border-2 border-[#ffdd00]').props('flat color=white')
+
     # Main settings UI
     with page_layout.frame('Settings'):
         with ui.element('div').classes('flex w-full').style('justify-content: safe center;'):
@@ -283,7 +377,7 @@ def settingsPage():
                     current_unit = globals.layoutState.get_units()
                     # Find the display name for the current value
                     current_display = next((k for k, v in unit_options.items() if v == current_unit), 'Celsius (C°)')
-                    
+
                     ui.select(
                         list(unit_options.keys()),
                         value=current_display,
@@ -339,6 +433,14 @@ def settingsPage():
                     ui.label('Default Fan Speed').classes('text-xl font-bold mb-4')
                     ui.label('These will be used when the system starts and persist between power cycles.').classes('text-sm text-gray-500 mb-2')
                     create_pwm_settings()
+
+                ui.separator().classes('mb-6')
+
+                # API Keys Section
+                with ui.column().classes('w-full'):
+                    ui.label('API Keys').classes('text-xl font-bold mb-2')
+                    ui.label('Keys are stored as hashes in config/api_config.json. Each key is shown only once at creation.').classes('text-sm text-gray-500 mb-4')
+                    create_api_keys_section()
 
                 # Additional spacing
                 ui.space().classes('h-2')

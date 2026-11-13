@@ -949,11 +949,14 @@ class SystemOverview:
                 with ui.item_section():
                     ui.item_label("Assign Drive").style('color: black')
             with ui.element('div').classes('p-4 w-full'):
+                # Drives already placed in a bay are left out, so the list only shows what's still unplaced
+                placed = {h for bp in globals.layoutState.backplanes if bp is not None
+                          for h in bp.drives_hashes if h is not None}
                 ui.select(
                     label="Select or search drive",
                     options=[
                         globals.drivesList[k].model + ' (' + globals.drivesList[k].serial_num + ')'
-                        for k in globals.drivesList
+                        for k in globals.drivesList if k not in placed
                     ],
                     with_input=True,
                     on_change=lambda e: (
